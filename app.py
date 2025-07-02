@@ -1,38 +1,39 @@
 import os
+from typing import List, Tuple
 import gradio as gr
-import openai
 from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 SYSTEM_PROMPT = (
     "You are a voice-ready Stoic chatbot. "
     "Respond concisely, often citing Marcus Aurelius, Seneca, or Epictetus."
 )
 
-def chat(user_message, history=None):
-    history = history or []
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for user, bot in history:
-        messages.append({"role": "user", "content": user})
-        messages.append({"role": "assistant", "content": bot})
-    messages.append({"role": "user", "content": user_message})
 
-    response = openai.ChatCompletion.create(
+def chat_fn(message: str, history: List[Tuple[str, str]]):
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for user, assistant in history:
+        messages.append({"role": "user", "content": user})
+        messages.append({"role": "assistant", "content": assistant})
+    messages.append({"role": "user", "content": message})
+
+    response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages,
         temperature=0.7,
-    )["choices"][0]["message"]["content"]
+    )
+    return response.choices[0].message.content
 
-    history.append((user_message, response))
-    return history, history
 
-with gr.Blocks() as demo:
-    gr.Markdown("# ✨ Stoic Chat (Week‑1 MVP)")
-    chatbox = gr.Chatbot()
-    txt = gr.Textbox(placeholder="Ask your question…")
-    txt.submit(chat, [txt, chatbox], [chatbox, chatbox]).then(lambda: "", None, txt)
+demo = gr.ChatInterface(
+    fn=chat_fn,
+    title="✨ Stoic Chat (Week-1 MVP)",
+    chatbot=gr.Chatbot(),
+    textbox=gr.Textbox(placeholder="Ask your question…", show_label=False),
+)
 
 if __name__ == "__main__":
     demo.launch()

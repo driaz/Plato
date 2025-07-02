@@ -1,0 +1,30 @@
+
+[
+  { "author": "Marcus Aurelius", "text": "You have power over your mind—not outside events." },
+  { "author": "Seneca",         "text": "We suffer more in imagination than in reality." },
+  { "author": "Epictetus",      "text": "It's not what happens to you, but how you react to it that matters." },
+  { "author": "Marcus Aurelius", "text": "The impediment to action advances action. What stands in the way becomes the way." },
+  { "author": "Seneca",         "text": "Luck is what happens when preparation meets opportunity." },
+
+  { "author": "Socrates",  "text": "The unexamined life is not worth living." },
+  { "author": "Socrates",  "text": "Wonder is the beginning of wisdom." },
+  { "author": "Socrates",  "text": "True knowledge exists in knowing that you know nothing." },
+
+  { "author": "Plato",     "text": "The measure of a man is what he does with power." },
+  { "author": "Plato",     "text": "Opinion is the medium between knowledge and ignorance." },
+  { "author": "Plato",     "text": "Courage is knowing what not to fear." },
+
+  { "author": "Aristotle", "text": "We are what we repeatedly do. Excellence, then, is not an act but a habit." },
+  { "author": "Aristotle", "text": "Knowing yourself is the beginning of all wisdom." },
+  { "author": "Aristotle", "text": "Patience is bitter, but its fruit is sweet." },
+
+  { "author": "Epictetus", "text": "It is impossible for a man to learn what he thinks he already knows." },
+  { "author": "Epictetus", "text": "First say to yourself what you would be; and then do what you have to do." },
+  { "author": "Epictetus", "text": "Wealth consists not in having great possessions, but in having few wants." },
+
+  { "author": "Plutarch",  "text": "The mind is not a vessel to be filled but a fire to be kindled." },
+  { "author": "Plutarch",  "text": "Character is simply habit long continued." },
+  { "author": "Plutarch",  "text": "What we achieve inwardly will change outer reality." }
+
+]
+
