@@ -1,3 +1,4 @@
+# Existing content from your .gitignore...
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -179,3 +180,20 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# ===== iOS SECURITY =====
+# Protect API keys and sensitive configuration
+iOS/Plato/Config.plist
+Config.plist
+
+# iOS build artifacts
+iOS/build/
+iOS/DerivedData/
+iOS/*.xcworkspace/xcuserdata/
+iOS/*.xcodeproj/xcuserdata/
+iOS/*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# iOS specific
+.DS_Store
+iOS/.DS_Store
+iOS/*/.DS_Store

@@ -11,128 +11,269 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var speechRecognizer = SpeechRecognizer()
     @StateObject private var textToSpeech = TextToSpeech()
-    @State private var messages: [String] = []
-    @State private var inputText: String = ""
+    @StateObject private var philosophyService = PhilosophyService()
+    
+    @State private var messages: [Message] = []
+    @State private var inputText = ""
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var showingError = false
+    
+    // Quick question buttons
+    let quickQuestions = [
+        "How do I deal with stress?",
+        "What would Marcus Aurelius say about failure?",
+        "How can I be more resilient?",
+        "What is the Stoic view on anger?",
+        "How do I find peace in difficult times?"
+    ]
     
     var body: some View {
-        VStack(spacing: 16) {
-            // Header
-            HStack {
-                Text("🏛️ Plato")
-                    .font(.largeTitle)
-                
-                if textToSpeech.isSpeaking {
-                    Image(systemName: "speaker.wave.2.fill")
-                        .foregroundColor(.blue)
-                        .font(.title2)
-                }
-            }
-            .padding()
-            
-            // Messages Display
-            ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(messages.enumerated()), id: \.offset) { index, message in
-                        HStack {
-                            if message.hasPrefix("You:") {
-                                Spacer()
-                                Text(message)
-                                    .padding(10)
-                                    .background(Color.blue)
-                                    .foregroundColor(.white)
-                                    .cornerRadius(12)
-                            } else {
-                                Text(message)
-                                    .padding(10)
-                                    .background(Color.gray.opacity(0.2))
-                                    .cornerRadius(12)
-                                Spacer()
+        NavigationView {
+            VStack(spacing: 0) {
+                // Chat Messages
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            ForEach(messages) { message in
+                                MessageBubble(message: message)
+                                    .id(message.id)
+                            }
+                            
+                            // Loading indicator
+                            if isLoading {
+                                HStack {
+                                    ProgressView()
+                                        .scaleEffect(0.8)
+                                    Text("Contemplating wisdom...")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding()
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+                    .onChange(of: messages.count) { _ in
+                        // Auto-scroll to bottom when new message arrives
+                        if let lastMessage = messages.last {
+                            withAnimation(.easeOut(duration: 0.3)) {
+                                proxy.scrollTo(lastMessage.id, anchor: .bottom)
                             }
                         }
                     }
                 }
-                .padding()
-            }
-            
-            // Voice Recording Status
-            if speechRecognizer.isRecording {
-                Text("🎤 Listening: \(speechRecognizer.transcribedText)")
-                    .padding()
-                    .background(Color.red.opacity(0.1))
-                    .cornerRadius(8)
-                    .padding(.horizontal)
-            }
-            
-            // Input Area
-            HStack {
-                TextField("Ask for wisdom...", text: $inputText)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
                 
-                Button("Send") {
-                    sendMessage(inputText)
+                Divider()
+                
+                // Quick Questions Section
+                if messages.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("💭 Quick Questions")
+                            .font(.headline)
+                            .padding(.horizontal)
+                        
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(quickQuestions, id: \.self) { question in
+                                    Button(action: {
+                                        askQuestion(question)
+                                    }) {
+                                        Text(question)
+                                            .font(.caption)
+                                            .padding(.vertical, 6)
+                                            .padding(.horizontal, 12)
+                                            .background(Color.blue.opacity(0.1))
+                                            .foregroundColor(.blue)
+                                            .cornerRadius(16)
+                                    }
+                                    .disabled(isLoading)
+                                }
+                            }
+                            .padding(.horizontal)
+                        }
+                    }
+                    .padding(.vertical, 8)
                 }
-                .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            .padding(.horizontal)
-            
-            // Voice Button
-            Button(action: toggleRecording) {
-                HStack {
-                    Image(systemName: speechRecognizer.isRecording ? "mic.fill" : "mic")
-                    Text(speechRecognizer.isRecording ? "Stop Recording" : "Tap to Speak")
+                
+                // Input Section
+                VStack(spacing: 12) {
+                    // Voice Recognition Status
+                    if speechRecognizer.isRecording {
+                        HStack {
+                            Image(systemName: "waveform")
+                                .foregroundColor(.red)
+                                .symbolEffect(.pulse)
+                            Text("Listening...")
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    
+                    // Text Input Row
+                    HStack(spacing: 12) {
+                        // Text Field
+                        TextField("Ask for wisdom or guidance...", text: $inputText)
+                            .textFieldStyle(RoundedBorderTextFieldStyle())
+                            .disabled(isLoading)
+                            .onSubmit {
+                                if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    askQuestion(inputText)
+                                }
+                            }
+                        
+                        // Voice Button
+                        Button(action: toggleRecording) {
+                            Image(systemName: speechRecognizer.isRecording ? "stop.circle.fill" : "mic.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(speechRecognizer.isRecording ? .red : .blue)
+                        }
+                        .disabled(isLoading)
+                        
+                        // Send Button
+                        Button(action: {
+                            if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                askQuestion(inputText)
+                            }
+                        }) {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading ? .gray : .blue)
+                        }
+                        .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading)
+                    }
+                    .padding(.horizontal)
                 }
-                .foregroundColor(.white)
-                .padding()
-                .background(speechRecognizer.isRecording ? Color.red : Color.blue)
-                .cornerRadius(25)
+                .padding(.vertical)
+                .background(Color(.systemBackground))
             }
-            .padding()
-        }
-        .onAppear {
-            speechRecognizer.requestPermissions()
-        }
-        .onChange(of: speechRecognizer.transcribedText) { newText in
-            inputText = newText
+            .navigationTitle("🏛️ Plato")
+            .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                speechRecognizer.requestPermission()
+            }
+            .onChange(of: speechRecognizer.transcript) { transcript in
+                if !transcript.isEmpty {
+                    inputText = transcript
+                }
+            }
+            .alert("Error", isPresented: $showingError) {
+                Button("OK") { }
+            } message: {
+                Text(errorMessage ?? "An unknown error occurred")
+            }
         }
     }
     
-    private func sendMessage(_ text: String) {
-        let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !message.isEmpty else { return }
-        
-        // Add user message
-        messages.append("You: \(message)")
-        inputText = ""
-        
-        // Generate AI response
-        let response = generateResponse(for: message)
-        
-        // Add AI response
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            messages.append("Plato: \(response)")
-            // Speak the response
-            textToSpeech.speak(response)
-        }
-    }
-    
-    private func generateResponse(for question: String) -> String {
-        // Simple responses for now - we'll connect to your API later
-        let responses = [
-            "The unexamined life is not worth living.",
-            "Wisdom begins in wonder.",
-            "Courage is knowing what not to fear.",
-            "The measure of a man is what he does with power.",
-            "Opinion is the medium between knowledge and ignorance."
-        ]
-        
-        return responses.randomElement() ?? "Seek wisdom in all things."
-    }
+    // MARK: - Actions
     
     private func toggleRecording() {
         if speechRecognizer.isRecording {
             speechRecognizer.stopRecording()
         } else {
             speechRecognizer.startRecording()
+            inputText = "" // Clear previous text when starting new recording
         }
     }
+    
+    private func askQuestion(_ question: String) {
+        let trimmedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuestion.isEmpty && !isLoading else { return }
+        
+        // Add user message
+        let userMessage = Message(text: trimmedQuestion, isUser: true)
+        messages.append(userMessage)
+        
+        // Clear input
+        inputText = ""
+        
+        // Stop any ongoing recording
+        if speechRecognizer.isRecording {
+            speechRecognizer.stopRecording()
+        }
+        
+        // Set loading state
+        isLoading = true
+        
+        // Get AI response
+        Task {
+            do {
+                let response = try await philosophyService.getPhilosophicalResponse(
+                    for: trimmedQuestion,
+                    conversationHistory: messages.filter { !$0.isUser } // Only pass previous AI responses for context
+                )
+                
+                await MainActor.run {
+                    // Add AI response
+                    let aiMessage = Message(text: response, isUser: false)
+                    messages.append(aiMessage)
+                    
+                    // Speak the response
+                    textToSpeech.speak(response)
+                    
+                    isLoading = false
+                }
+                
+            } catch {
+                await MainActor.run {
+                    // Add error message to chat
+                    let errorMsg = Message(text: "I apologize, but I'm having trouble connecting to my wisdom. Please try again. (\(error.localizedDescription))", isUser: false)
+                    messages.append(errorMsg)
+                    
+                    // Show error alert
+                    errorMessage = error.localizedDescription
+                    showingError = true
+                    
+                    isLoading = false
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Message Bubble View
+struct MessageBubble: View {
+    let message: Message
+    
+    var body: some View {
+        HStack {
+            if message.isUser {
+                Spacer()
+                
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(message.text)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(18)
+                    
+                    Text("You")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(message.text)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(Color(.systemGray5))
+                        .foregroundColor(.primary)
+                        .cornerRadius(18)
+                    
+                    Text("🏛️ Stoic Sage")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                
+                Spacer()
+            }
+        }
+    }
+}
+
+// MARK: - Preview
+#Preview {
+    ContentView()
 }
