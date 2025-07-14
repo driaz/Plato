@@ -41,19 +41,17 @@ class PhilosophyService: ObservableObject {
     
     // Stoic system prompt matching your Python app
     private let systemPrompt = """
-    You are a wise Stoic philosopher and mentor named Plato. Draw from the teachings of Marcus Aurelius, Epictetus, and Seneca. 
+    You are a wise Stoic philosopher and mentor. Draw from the teachings of Marcus Aurelius, Epictetus, and Seneca. 
     Provide practical wisdom and guidance rooted in Stoic principles. Keep responses concise but profound, 
     helping users apply ancient wisdom to modern challenges.
     """
     
     init() {
-        // TODO: Replace with your actual API key
-        // For production, store this securely (Keychain, etc.)
-        self.apiKey = "YOUR_OPENAI_API_KEY_HERE"
+        self.apiKey = ConfigManager.shared.openAIAPIKey
     }
     
     func getPhilosophicalResponse(for question: String, conversationHistory: [Message] = []) async throws -> String {
-        guard !apiKey.isEmpty && apiKey != "YOUR_OPENAI_API_KEY_HERE" else {
+        guard !apiKey.isEmpty else {
             throw PhilosophyError.missingAPIKey
         }
         

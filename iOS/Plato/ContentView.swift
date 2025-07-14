@@ -10,7 +10,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var speechRecognizer = SpeechRecognizer()
-    @StateObject private var textToSpeech = TextToSpeech()
+    @StateObject private var elevenLabsService = ElevenLabsService()
     @StateObject private var philosophyService = PhilosophyService()
     
     @State private var messages: [Message] = []
@@ -45,7 +45,7 @@ struct ContentView: View {
                                 HStack {
                                     ProgressView()
                                         .scaleEffect(0.8)
-                                    Text("Contemplating wisdom...")
+                                    Text(elevenLabsService.isGenerating ? "Generating voice..." : "Contemplating wisdom...")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                 }
@@ -65,6 +65,25 @@ struct ContentView: View {
                 }
                 
                 Divider()
+                
+                // Voice Configuration Status
+                VStack(spacing: 4) {
+                    HStack {
+                        Image(systemName: elevenLabsService.isConfigured ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .foregroundColor(elevenLabsService.isConfigured ? .green : .orange)
+                        Text(elevenLabsService.isConfigured ? "🎭 ElevenLabs Voice (George)" : "🔊 System Voice (Fallback)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        if elevenLabsService.isSpeaking {
+                            Image(systemName: "speaker.wave.2.fill")
+                                .foregroundColor(.blue)
+                                .symbolEffect(.pulse)
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+                .padding(.vertical, 4)
                 
                 // Quick Questions Section
                 if messages.isEmpty {
@@ -209,8 +228,10 @@ struct ContentView: View {
                     let aiMessage = Message(text: response, isUser: false)
                     messages.append(aiMessage)
                     
-                    // Speak the response
-                    textToSpeech.speak(response)
+                    // Speak the response using ElevenLabs
+                    Task {
+                        await elevenLabsService.speak(response)
+                    }
                     
                     isLoading = false
                 }
