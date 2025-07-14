@@ -18,6 +18,8 @@ struct ContentView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var showingError = false
+    @State private var isAlwaysListening = true
+    @State private var hasShownWelcome = false
     
     // Quick question buttons
     let quickQuestions = [
@@ -35,6 +37,35 @@ struct ContentView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 12) {
+                            // Welcome message for always-on listening
+                            if messages.isEmpty && hasShownWelcome {
+                                VStack(spacing: 16) {
+                                    Image(systemName: "ear.and.waveform")
+                                        .font(.system(size: 60))
+                                        .foregroundColor(.blue)
+                                        .symbolEffect(.pulse)
+                                    
+                                    VStack(spacing: 8) {
+                                        Text("🏛️ Welcome to Plato")
+                                            .font(.title2)
+                                            .fontWeight(.bold)
+                                        
+                                        Text("I'm listening and ready for your questions about life, wisdom, and philosophy.")
+                                            .font(.body)
+                                            .multilineTextAlignment(.center)
+                                            .foregroundColor(.secondary)
+                                        
+                                        Text("Just start speaking - no need to tap anything!")
+                                            .font(.caption)
+                                            .fontWeight(.medium)
+                                            .foregroundColor(.blue)
+                                    }
+                                }
+                                .padding(.horizontal, 40)
+                                .padding(.vertical, 60)
+                            }
+                            
+                            // Chat messages
                             ForEach(messages) { message in
                                 MessageBubble(message: message)
                                     .id(message.id)
@@ -66,27 +97,8 @@ struct ContentView: View {
                 
                 Divider()
                 
-                // Voice Configuration Status
-                VStack(spacing: 4) {
-                    HStack {
-                        Image(systemName: elevenLabsService.isConfigured ? "checkmark.circle.fill" : "xmark.circle.fill")
-                            .foregroundColor(elevenLabsService.isConfigured ? .green : .orange)
-                        Text(elevenLabsService.isConfigured ? "🎭 ElevenLabs Voice (George)" : "🔊 System Voice (Fallback)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        if elevenLabsService.isSpeaking {
-                            Image(systemName: "speaker.wave.2.fill")
-                                .foregroundColor(.blue)
-                                .symbolEffect(.pulse)
-                        }
-                    }
-                    .padding(.horizontal)
-                }
-                .padding(.vertical, 4)
-                
-                // Quick Questions Section
-                if messages.isEmpty {
+                // Quick Questions Section (only when no messages and not always listening)
+                if messages.isEmpty && !isAlwaysListening && hasShownWelcome {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("💭 Quick Questions")
                             .font(.headline)
@@ -115,66 +127,159 @@ struct ContentView: View {
                     .padding(.vertical, 8)
                 }
                 
-                // Input Section
-                VStack(spacing: 12) {
-                    // Voice Recognition Status
-                    if speechRecognizer.isRecording {
-                        HStack {
-                            Image(systemName: "waveform")
-                                .foregroundColor(.red)
-                                .symbolEffect(.pulse)
-                            Text("Listening...")
+                // Voice Status Bar - Always visible
+                VStack(spacing: 4) {
+                    HStack {
+                        // Listening indicator
+                        Circle()
+                            .fill(speechRecognizer.isRecording ? Color.red : Color.gray.opacity(0.3))
+                            .frame(width: 8, height: 8)
+                            .scaleEffect(speechRecognizer.isRecording ? 1.2 : 1.0)
+                            .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: speechRecognizer.isRecording)
+                        
+                        if speechRecognizer.isProcessing {
+                            Text("Processing your question...")
                                 .font(.caption)
-                                .foregroundColor(.red)
+                                .foregroundColor(.blue)
+                        } else if elevenLabsService.isSpeaking {
+                            Text("AI is speaking (listening paused)...")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        } else if speechRecognizer.isRecording && !inputText.isEmpty {
+                            Text("Listening: \"\(inputText.prefix(30))\(inputText.count > 30 ? "..." : "")\"")
+                                .font(.caption)
+                                .foregroundColor(.primary)
+                        } else if speechRecognizer.isRecording {
+                            Text("Listening for your question...")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        } else if isAlwaysListening {
+                            Text("Ready to listen (should auto-resume)")
+                                .font(.caption)
+                                .foregroundColor(.red) // Red to indicate this shouldn't stay
+                        } else {
+                            Text("Always-listening disabled")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
-                        .padding(.vertical, 4)
-                    }
-                    
-                    // Text Input Row
-                    HStack(spacing: 12) {
-                        // Text Field
-                        TextField("Ask for wisdom or guidance...", text: $inputText)
-                            .textFieldStyle(RoundedBorderTextFieldStyle())
-                            .disabled(isLoading)
-                            .onSubmit {
-                                if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                    askQuestion(inputText)
-                                }
-                            }
                         
-                        // Voice Button
-                        Button(action: toggleRecording) {
-                            Image(systemName: speechRecognizer.isRecording ? "stop.circle.fill" : "mic.circle.fill")
-                                .font(.title2)
-                                .foregroundColor(speechRecognizer.isRecording ? .red : .blue)
-                        }
-                        .disabled(isLoading)
+                        Spacer()
                         
-                        // Send Button
-                        Button(action: {
-                            if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                askQuestion(inputText)
-                            }
-                        }) {
-                            Image(systemName: "arrow.up.circle.fill")
-                                .font(.title2)
-                                .foregroundColor(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading ? .gray : .blue)
+                        // Toggle always-listening mode
+                        Button(action: toggleAlwaysListening) {
+                            Image(systemName: isAlwaysListening ? "ear.and.waveform" : "ear.and.waveform.slash")
+                                .font(.caption)
+                                .foregroundColor(isAlwaysListening ? .blue : .gray)
                         }
-                        .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading)
                     }
                     .padding(.horizontal)
                 }
-                .padding(.vertical)
-                .background(Color(.systemBackground))
+                .padding(.vertical, 6)
+                .background(Color(.systemGray6))
+                
+                // Manual text input (only when always-listening is off)
+                if !isAlwaysListening {
+                    VStack(spacing: 12) {
+                        // Text Input Row
+                        HStack(spacing: 12) {
+                            // Text Field
+                            TextField("Type your question or toggle listening above...", text: $inputText)
+                                .textFieldStyle(RoundedBorderTextFieldStyle())
+                                .disabled(isLoading)
+                                .onSubmit {
+                                    if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                        askQuestion(inputText)
+                                    }
+                                }
+                            
+                            // Voice Button (manual mode)
+                            Button(action: toggleRecording) {
+                                Image(systemName: speechRecognizer.isRecording ? "mic.fill" : "mic.circle.fill")
+                                    .font(.title2)
+                                    .foregroundColor(speechRecognizer.isRecording ? .red : .blue)
+                                    .symbolEffect(.pulse, isActive: speechRecognizer.isRecording)
+                            }
+                            .disabled(isLoading)
+                            
+                            // Send Button
+                            if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Button(action: {
+                                    askQuestion(inputText)
+                                }) {
+                                    Image(systemName: "arrow.up.circle.fill")
+                                        .font(.title2)
+                                        .foregroundColor(.blue)
+                                }
+                                .disabled(isLoading)
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+                    .padding(.vertical)
+                }
+                
+                // Voice Configuration Status
+                VStack(spacing: 4) {
+                    HStack {
+                        Image(systemName: elevenLabsService.isConfigured ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .foregroundColor(elevenLabsService.isConfigured ? .green : .orange)
+                        Text(elevenLabsService.isConfigured ? "🎭 ElevenLabs Voice (George)" : "🔊 System Voice (Fallback)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        if elevenLabsService.isSpeaking {
+                            Image(systemName: "speaker.wave.2.fill")
+                                .foregroundColor(.blue)
+                                .symbolEffect(.pulse)
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+                .padding(.vertical, 4)
             }
             .navigationTitle("🏛️ Plato")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
                 speechRecognizer.requestPermission()
+                
+                // Set up auto-upload callback
+                speechRecognizer.onAutoUpload = { transcript in
+                    askQuestion(transcript)
+                }
+                
+                // Start always-listening after a brief delay
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    if isAlwaysListening {
+                        speechRecognizer.startAlwaysListening()
+                    }
+                    hasShownWelcome = true
+                }
+            }
+            .onDisappear {
+                // Stop listening when app goes away
+                speechRecognizer.stopAlwaysListening()
             }
             .onChange(of: speechRecognizer.transcript) { transcript in
                 if !transcript.isEmpty {
                     inputText = transcript
+                }
+            }
+            .onChange(of: elevenLabsService.isSpeaking) { isSpeaking in
+                // Pause/resume listening based on AI speaking state
+                print("AI speaking state changed: \(isSpeaking)")
+                if isAlwaysListening {
+                    if isSpeaking {
+                        // Pause listening while AI is speaking
+                        print("Pausing listening - AI started speaking")
+                        speechRecognizer.pauseListening()
+                    } else {
+                        // Resume listening when AI finishes speaking
+                        print("AI finished speaking - resuming in 1 second...")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            print("Attempting to resume listening...")
+                            speechRecognizer.resumeListening()
+                        }
+                    }
                 }
             }
             .alert("Error", isPresented: $showingError) {
@@ -187,12 +292,23 @@ struct ContentView: View {
     
     // MARK: - Actions
     
+    private func toggleAlwaysListening() {
+        isAlwaysListening.toggle()
+        
+        if isAlwaysListening {
+            speechRecognizer.startAlwaysListening()
+        } else {
+            speechRecognizer.stopAlwaysListening()
+        }
+    }
+    
     private func toggleRecording() {
+        // This is only used in manual mode
         if speechRecognizer.isRecording {
-            speechRecognizer.stopRecording()
+            speechRecognizer.manualUpload()
         } else {
             speechRecognizer.startRecording()
-            inputText = "" // Clear previous text when starting new recording
+            inputText = ""
         }
     }
     
@@ -207,8 +323,8 @@ struct ContentView: View {
         // Clear input
         inputText = ""
         
-        // Stop any ongoing recording
-        if speechRecognizer.isRecording {
+        // Stop any ongoing recording if in manual mode
+        if !isAlwaysListening && speechRecognizer.isRecording {
             speechRecognizer.stopRecording()
         }
         
@@ -220,20 +336,19 @@ struct ContentView: View {
             do {
                 let response = try await philosophyService.getPhilosophicalResponse(
                     for: trimmedQuestion,
-                    conversationHistory: messages.filter { !$0.isUser } // Only pass previous AI responses for context
+                    conversationHistory: messages.filter { !$0.isUser }
                 )
                 
                 await MainActor.run {
-                    // Add AI response
+                    // Add AI response to UI immediately
                     let aiMessage = Message(text: response, isUser: false)
                     messages.append(aiMessage)
-                    
-                    // Speak the response using ElevenLabs
-                    Task {
-                        await elevenLabsService.speak(response)
-                    }
-                    
                     isLoading = false
+                }
+                
+                // Start voice generation in parallel
+                Task {
+                    await elevenLabsService.speak(response)
                 }
                 
             } catch {

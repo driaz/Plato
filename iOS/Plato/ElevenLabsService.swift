@@ -69,17 +69,54 @@ class ElevenLabsService: NSObject, ObservableObject {
             return
         }
         
+        // Clean text for speech before processing
+        let cleanedText = cleanTextForSpeech(text)
+        
         isGenerating = true
         
         do {
-            let audioData = try await generateSpeech(text: text)
+            let audioData = try await generateSpeech(text: cleanedText)
             await playAudio(data: audioData)
         } catch {
             print("ElevenLabs TTS error: \(error), falling back to system TTS")
-            await fallbackToSystemTTS(text)
+            await fallbackToSystemTTS(cleanedText)
         }
         
         isGenerating = false
+    }
+    
+    private func cleanTextForSpeech(_ text: String) -> String {
+        var cleaned = text
+        
+        // Remove common markdown formatting
+        cleaned = cleaned.replacingOccurrences(of: "**", with: "") // Bold
+        cleaned = cleaned.replacingOccurrences(of: "*", with: "")  // Italics
+        cleaned = cleaned.replacingOccurrences(of: "_", with: "")  // Underline
+        cleaned = cleaned.replacingOccurrences(of: "`", with: "")  // Code
+        cleaned = cleaned.replacingOccurrences(of: "#", with: "")  // Headers
+        cleaned = cleaned.replacingOccurrences(of: "~", with: "")  // Strikethrough
+        
+        // Clean up bullet points and lists
+        cleaned = cleaned.replacingOccurrences(of: "• ", with: "")
+        cleaned = cleaned.replacingOccurrences(of: "- ", with: "")
+        cleaned = cleaned.replacingOccurrences(of: "+ ", with: "")
+        
+        // Replace em dashes with regular dashes for better speech
+        cleaned = cleaned.replacingOccurrences(of: "—", with: " - ")
+        cleaned = cleaned.replacingOccurrences(of: "–", with: " - ")
+        
+        // Clean up multiple spaces and line breaks
+        cleaned = cleaned.replacingOccurrences(of: "\n\n", with: ". ")
+        cleaned = cleaned.replacingOccurrences(of: "\n", with: " ")
+        cleaned = cleaned.replacingOccurrences(of: "  ", with: " ")
+        
+        // Remove any remaining special characters that sound bad
+        cleaned = cleaned.replacingOccurrences(of: "[", with: "")
+        cleaned = cleaned.replacingOccurrences(of: "]", with: "")
+        cleaned = cleaned.replacingOccurrences(of: "{", with: "")
+        cleaned = cleaned.replacingOccurrences(of: "}", with: "")
+        
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     private func generateSpeech(text: String) async throws -> Data {
@@ -92,11 +129,11 @@ class ElevenLabsService: NSObject, ObservableObject {
         
         let requestBody = ElevenLabsRequest(
             text: text,
-            modelId: "eleven_monolingual_v1",
+            modelId: "eleven_turbo_v2_5", // Faster model for reduced latency
             voiceSettings: VoiceSettings(
                 stability: 0.6,        // More stable for philosophical content
                 similarityBoost: 0.8,  // Higher similarity for consistency
-                style: 0.3,           // Subtle style for natural speech
+                style: 0.2,           // Reduced style for faster generation
                 useSpeakerBoost: true  // Enhanced clarity
             )
         )
@@ -118,27 +155,39 @@ class ElevenLabsService: NSObject, ObservableObject {
     
     private func playAudio(data: Data) async {
         do {
+            // Pre-configure audio session for faster playback
+            try AVAudioSession.sharedInstance().setActive(true)
+            
             audioPlayer = try AVAudioPlayer(data: data)
             audioPlayer?.delegate = self
+            audioPlayer?.prepareToPlay() // Pre-buffer audio for faster start
             
-            isSpeaking = true
+            await MainActor.run {
+                isSpeaking = true
+            }
+            
             audioPlayer?.play()
             
-            // Wait for playback to complete
+            // Wait for playback to complete more efficiently
             while audioPlayer?.isPlaying == true {
-                try await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+                try await Task.sleep(nanoseconds: 50_000_000) // Check every 0.05 seconds (faster polling)
             }
             
         } catch {
             print("Failed to play ElevenLabs audio: \(error)")
-            isSpeaking = false
+            await MainActor.run {
+                isSpeaking = false
+            }
         }
     }
     
     private func fallbackToSystemTTS(_ text: String) async {
+        // Clean text for system TTS too
+        let cleanedText = cleanTextForSpeech(text)
+        
         // Fallback to Apple's system TTS if ElevenLabs fails
         let synthesizer = AVSpeechSynthesizer()
-        let utterance = AVSpeechUtterance(string: text)
+        let utterance = AVSpeechUtterance(string: cleanedText)
         utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.85 // Slightly slower
         
@@ -146,7 +195,7 @@ class ElevenLabsService: NSObject, ObservableObject {
         synthesizer.speak(utterance)
         
         // Simple wait for system TTS (approximate)
-        let estimatedDuration = Double(text.count) * 0.08 // Rough estimate
+        let estimatedDuration = Double(cleanedText.count) * 0.08 // Rough estimate
         try? await Task.sleep(nanoseconds: UInt64(estimatedDuration * 1_000_000_000))
         isSpeaking = false
     }

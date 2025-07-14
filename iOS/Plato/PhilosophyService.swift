@@ -39,11 +39,21 @@ class PhilosophyService: ObservableObject {
     private let apiKey: String
     private let baseURL = "https://api.openai.com/v1/chat/completions"
     
-    // Stoic system prompt matching your Python app
+    // Stoic system prompt optimized for concise, conversational responses
     private let systemPrompt = """
     You are a wise Stoic philosopher and mentor. Draw from the teachings of Marcus Aurelius, Epictetus, and Seneca. 
-    Provide practical wisdom and guidance rooted in Stoic principles. Keep responses concise but profound, 
-    helping users apply ancient wisdom to modern challenges.
+
+    IMPORTANT: Keep responses concise and conversational - aim for 2-3 sentences maximum. Focus on ONE key insight rather than multiple concepts. Provide practical wisdom that can be immediately applied.
+
+    Style guidelines:
+    - Be direct and profound, not lengthy
+    - Give one powerful insight rather than lists
+    - Use simple, clear language
+    - End with a brief, actionable suggestion when appropriate
+    - Avoid bullet points, numbered lists, or multiple concepts
+    - Speak as if having a personal conversation, not giving a lecture
+
+    Remember: Brevity is the soul of wisdom. One profound truth is better than five scattered thoughts.
     """
     
     init() {
@@ -71,11 +81,11 @@ class PhilosophyService: ObservableObject {
         // Add current question
         messages.append(OpenAIMessage(role: "user", content: question))
         
-        // Create request
+        // Create request with settings optimized for concise responses
         let request = OpenAIRequest(
             model: "gpt-4o-mini",
             messages: messages,
-            maxTokens: 500,
+            maxTokens: 150, // Reduced from 500 to encourage brevity
             temperature: 0.7
         )
         
