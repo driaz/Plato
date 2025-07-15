@@ -63,22 +63,29 @@ class ElevenLabsService: NSObject, ObservableObject {
     }
     
     func speak(_ text: String) async {
+        print("🎭 ElevenLabs speak called with: '\(text.prefix(50))...'")
+        print("🔑 API Key configured: \(!apiKey.isEmpty)")
+        
         guard !apiKey.isEmpty else {
-            print("ElevenLabs API key not configured, falling back to system TTS")
+            print("🔄 ElevenLabs API key not configured, falling back to system TTS")
             await fallbackToSystemTTS(text)
             return
         }
         
         // Clean text for speech before processing
         let cleanedText = cleanTextForSpeech(text)
+        print("🧹 Cleaned text: '\(cleanedText.prefix(50))...'")
         
         isGenerating = true
         
         do {
+            print("🎵 Starting ElevenLabs generation...")
             let audioData = try await generateSpeech(text: cleanedText)
+            print("✅ ElevenLabs generation successful, data size: \(audioData.count) bytes")
             await playAudio(data: audioData)
+            print("🔊 Audio playback completed")
         } catch {
-            print("ElevenLabs TTS error: \(error), falling back to system TTS")
+            print("❌ ElevenLabs TTS error: \(error), falling back to system TTS")
             await fallbackToSystemTTS(cleanedText)
         }
         
@@ -155,7 +162,8 @@ class ElevenLabsService: NSObject, ObservableObject {
     
     private func playAudio(data: Data) async {
         do {
-            // Pre-configure audio session for faster playback
+            // Pre-configure audio session for playback
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
             try AVAudioSession.sharedInstance().setActive(true)
             
             audioPlayer = try AVAudioPlayer(data: data)
@@ -164,26 +172,42 @@ class ElevenLabsService: NSObject, ObservableObject {
             
             await MainActor.run {
                 isSpeaking = true
+                print("🔊 Starting audio playback - isSpeaking set to TRUE")
             }
             
             audioPlayer?.play()
             
             // Wait for playback to complete more efficiently
             while audioPlayer?.isPlaying == true {
-                try await Task.sleep(nanoseconds: 50_000_000) // Check every 0.05 seconds (faster polling)
+                try await Task.sleep(nanoseconds: 50_000_000) // Check every 0.05 seconds
+            }
+            
+            await MainActor.run {
+                isSpeaking = false
+                print("🔊 Audio playback finished - isSpeaking set to FALSE")
             }
             
         } catch {
             print("Failed to play ElevenLabs audio: \(error)")
             await MainActor.run {
                 isSpeaking = false
+                print("🔊 Audio playback failed - isSpeaking set to FALSE")
             }
         }
     }
     
     private func fallbackToSystemTTS(_ text: String) async {
+        print("🔄 Using system TTS fallback")
         // Clean text for system TTS too
         let cleanedText = cleanTextForSpeech(text)
+        
+        // Configure audio session for playback
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            print("Failed to configure audio session for system TTS: \(error)")
+        }
         
         // Fallback to Apple's system TTS if ElevenLabs fails
         let synthesizer = AVSpeechSynthesizer()
@@ -191,13 +215,23 @@ class ElevenLabsService: NSObject, ObservableObject {
         utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.85 // Slightly slower
         
-        isSpeaking = true
+        await MainActor.run {
+            isSpeaking = true
+            print("🔊 System TTS starting - isSpeaking set to TRUE")
+        }
+        
         synthesizer.speak(utterance)
         
         // Simple wait for system TTS (approximate)
         let estimatedDuration = Double(cleanedText.count) * 0.08 // Rough estimate
         try? await Task.sleep(nanoseconds: UInt64(estimatedDuration * 1_000_000_000))
-        isSpeaking = false
+        
+        await MainActor.run {
+            isSpeaking = false
+            print("🔊 System TTS completed - isSpeaking set to FALSE")
+        }
+        
+        print("🔊 System TTS completed")
     }
     
     func stopSpeaking() {

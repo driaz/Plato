@@ -39,14 +39,33 @@ class SpeechRecognizer: ObservableObject {
     }
     
     func requestPermission() {
-        SFSpeechRecognizer.requestAuthorization { [weak self] authStatus in
-            DispatchQueue.main.async {
-                switch authStatus {
-                case .authorized:
-                    self?.isAuthorized = true
-                case .denied, .restricted, .notDetermined:
-                    self?.isAuthorized = false
-                @unknown default:
+        // Request both microphone and speech recognition permissions
+        AVAudioSession.sharedInstance().requestRecordPermission { [weak self] micGranted in
+            if micGranted {
+                SFSpeechRecognizer.requestAuthorization { [weak self] authStatus in
+                    DispatchQueue.main.async {
+                        switch authStatus {
+                        case .authorized:
+                            print("✅ Speech recognition authorized")
+                            self?.isAuthorized = true
+                        case .denied:
+                            print("❌ Speech recognition denied")
+                            self?.isAuthorized = false
+                        case .restricted:
+                            print("❌ Speech recognition restricted")
+                            self?.isAuthorized = false
+                        case .notDetermined:
+                            print("❌ Speech recognition not determined")
+                            self?.isAuthorized = false
+                        @unknown default:
+                            print("❌ Speech recognition unknown status")
+                            self?.isAuthorized = false
+                        }
+                    }
+                }
+            } else {
+                print("❌ Microphone permission denied")
+                DispatchQueue.main.async {
                     self?.isAuthorized = false
                 }
             }
@@ -123,9 +142,10 @@ class SpeechRecognizer: ObservableObject {
             // First deactivate any existing session
             try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
             
-            // Configure for recording
-            try audioSession.setCategory(.record, mode: .measurement, options: [.duckOthers, .defaultToSpeaker])
+            // Configure for recording (remove defaultToSpeaker option)
+            try audioSession.setCategory(.record, mode: .measurement, options: [.duckOthers])
             try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            print("✅ Audio session configured successfully")
         } catch {
             print("Failed to set up audio session: \(error)")
             // Don't return here - try to continue anyway
@@ -138,19 +158,44 @@ class SpeechRecognizer: ObservableObject {
             return
         }
         
-        // Enhanced recognition settings
+        // Enhanced recognition settings for maximum accuracy
         recognitionRequest.shouldReportPartialResults = true
-        recognitionRequest.requiresOnDeviceRecognition = false // Use server for better accuracy
-        recognitionRequest.taskHint = .dictation // Better for philosophical conversations
+        recognitionRequest.requiresOnDeviceRecognition = false // Server has better accuracy
+        recognitionRequest.taskHint = .dictation // Best for conversational speech
         
-        // Add context hints for better recognition of philosophical terms
+        // Add comprehensive context hints for better recognition
         if #available(iOS 16.0, *) {
             recognitionRequest.addsPunctuation = true
+            
+            // Extensive contextual vocabulary for philosophical conversations
             recognitionRequest.contextualStrings = [
-                "Marcus Aurelius", "Epictetus", "Seneca", "Stoic", "stoicism",
-                "philosophy", "philosopher", "wisdom", "virtue", "meditation",
-                "acceptance", "resilience", "mindfulness", "contemplation"
+                // Stoic philosophers
+                "Marcus Aurelius", "Epictetus", "Seneca", "Plato",
+                
+                // Philosophical concepts
+                "Stoic", "stoicism", "philosophy", "philosopher", "wisdom", "virtue",
+                "meditation", "meditations", "acceptance", "resilience", "mindfulness",
+                "contemplation", "temperance", "justice", "courage", "prudence",
+                
+                // Common meditation/mindfulness phrases
+                "sit in stillness", "inner peace", "present moment", "letting go",
+                "breathe deeply", "find balance", "mental clarity", "emotional control",
+                "self reflection", "personal growth", "life lessons", "ancient wisdom",
+                
+                // Action words often used in philosophical context
+                "cultivate", "embrace", "acknowledge", "recognize", "practice",
+                "discipline", "perseverance", "endurance", "tranquility", "serenity",
+                
+                // Common question starters
+                "how do I", "what would", "how can I", "what should I", "why do I",
+                "help me understand", "teach me", "show me", "guide me"
             ]
+        }
+        
+        // For iOS 15 and earlier, we'll rely on post-processing corrections
+        if #available(iOS 17.0, *) {
+            // iOS 17+ has even better recognition capabilities
+            recognitionRequest.interactionIdentifier = "philosophical_conversation"
         }
         
         // Get input node with error handling
@@ -216,12 +261,12 @@ class SpeechRecognizer: ObservableObject {
         }
     }
     
-    // Post-processing to fix common philosophical term mistakes
+    // Post-processing to fix common philosophical term mistakes while preserving natural speech
     private func correctCommonMistakes(_ text: String) -> String {
         var corrected = text
         
-        // Common philosophy-related corrections
-        let corrections: [String: String] = [
+        // Step 1: Fix philosophical term misrecognitions
+        let philosophicalCorrections: [String: String] = [
             "markets": "Marcus",
             "market": "Marcus",
             "Marcus": "Marcus Aurelius", // Expand to full name
@@ -230,22 +275,11 @@ class SpeechRecognizer: ObservableObject {
             "seneca": "Seneca",
             "stoic": "Stoic",
             "stoics": "Stoics",
-            "stoicism": "Stoicism",
-            "philosophy": "philosophy",
-            "philosopher": "philosopher",
-            "meditations": "Meditations",
-            "meditation": "meditation",
-            "wisdom": "wisdom",
-            "virtue": "virtue",
-            "virtues": "virtues",
-            "temperance": "temperance",
-            "justice": "justice",
-            "courage": "courage",
-            "prudence": "prudence"
+            "stoicism": "Stoicism"
         ]
         
-        // Apply word-boundary corrections (so we don't change partial words)
-        for (mistake, correction) in corrections {
+        // Apply philosophical corrections with word boundaries
+        for (mistake, correction) in philosophicalCorrections {
             let pattern = "\\b\(NSRegularExpression.escapedPattern(for: mistake))\\b"
             corrected = corrected.replacingOccurrences(
                 of: pattern,
@@ -254,7 +288,110 @@ class SpeechRecognizer: ObservableObject {
             )
         }
         
+        // Step 2: Normalize colloquial speech for better AI understanding
+        corrected = normalizeColloquialSpeech(corrected)
+        
         return corrected
+    }
+    
+    private func normalizeColloquialSpeech(_ text: String) -> String {
+        var normalized = text
+        
+        // Step 1: Fix common speech recognition errors for philosophical phrases
+        let phraseCorrections: [String: String] = [
+            // Meditation and mindfulness phrases
+            "sit and stillness": "sit in stillness",
+            "sit in silence": "sit in silence",
+            "inner piece": "inner peace",
+            "piece of mind": "peace of mind",
+            "presents moment": "present moment",
+            "present mmoment": "present moment",
+            "letting goal": "letting go",
+            "let it goal": "let it go",
+            
+            // Philosophical concepts
+            "ancient wisdom": "ancient wisdom",
+            "stoic principals": "Stoic principles",
+            "self reflection": "self-reflection",
+            "mental clarity": "mental clarity",
+            "emotional control": "emotional control",
+            
+            // Common action phrases
+            "except it": "accept it",
+            "except what": "accept what",
+            "breathe deeply": "breathe deeply",
+            "find balance": "find balance",
+            
+            // Question patterns
+            "how do i": "how do I",
+            "what would": "what would",
+            "how can i": "how can I",
+            "what should i": "what should I"
+        ]
+        
+        // Apply phrase corrections first (before word-level fixes)
+        for (incorrect, correct) in phraseCorrections {
+            normalized = normalized.replacingOccurrences(
+                of: incorrect,
+                with: correct,
+                options: .caseInsensitive
+            )
+        }
+        
+        // Step 2: Handle colloquial speech normalization
+        let colloquialMappings: [String: String] = [
+            // Filler words - keep some, remove excessive
+            " uh uh ": " uh ",           // Reduce double fillers
+            " um um ": " um ",
+            " like like ": " like ",
+            
+            // Common contractions and casual speech
+            "kinda": "kind of",
+            "gonna": "going to",
+            "wanna": "want to",
+            "gotta": "got to",
+            "sorta": "sort of",
+            
+            // Question patterns
+            "ya know": "you know",
+            "y'know": "you know",
+            "ya think": "you think",
+            
+            // Casual intensifiers
+            "super ": "very ",
+            "pretty ": "quite ",
+            "really really": "really",
+            "very very": "very",
+            
+            // Clean up excessive repetition while keeping natural flow
+            "and and": "and",
+            "but but": "but",
+            "so so": "so",
+            "the the": "the",
+            
+            // Fix common speech recognition errors
+            "could of": "could have",
+            "would of": "would have",
+            "should of": "should have"
+        ]
+        
+        // Apply casual speech normalization
+        for (casual, formal) in colloquialMappings {
+            normalized = normalized.replacingOccurrences(
+                of: casual,
+                with: formal,
+                options: .caseInsensitive
+            )
+        }
+        
+        // Step 3: Clean up spacing and punctuation
+        normalized = normalized.replacingOccurrences(of: "  ", with: " ")
+        normalized = normalized.replacingOccurrences(of: " ,", with: ",")
+        normalized = normalized.replacingOccurrences(of: " .", with: ".")
+        normalized = normalized.replacingOccurrences(of: " ?", with: "?")
+        normalized = normalized.replacingOccurrences(of: " !", with: "!")
+        
+        return normalized.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     // MARK: - Auto-upload functionality

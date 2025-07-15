@@ -39,30 +39,64 @@ struct ContentView: View {
                         LazyVStack(spacing: 12) {
                             // Welcome message for always-on listening
                             if messages.isEmpty && hasShownWelcome {
-                                VStack(spacing: 16) {
-                                    Image(systemName: "ear.and.waveform")
-                                        .font(.system(size: 60))
-                                        .foregroundColor(.blue)
-                                        .symbolEffect(.pulse)
-                                    
-                                    VStack(spacing: 8) {
-                                        Text("🏛️ Welcome to Plato")
-                                            .font(.title2)
-                                            .fontWeight(.bold)
-                                        
-                                        Text("I'm listening and ready for your questions about life, wisdom, and philosophy.")
-                                            .font(.body)
-                                            .multilineTextAlignment(.center)
-                                            .foregroundColor(.secondary)
-                                        
-                                        Text("Just start speaking - no need to tap anything!")
-                                            .font(.caption)
-                                            .fontWeight(.medium)
+                                if speechRecognizer.isAuthorized {
+                                    VStack(spacing: 16) {
+                                        Image(systemName: "ear.and.waveform")
+                                            .font(.system(size: 60))
                                             .foregroundColor(.blue)
+                                            .symbolEffect(.pulse)
+                                        
+                                        VStack(spacing: 8) {
+                                            Text("🏛️ Welcome to Plato")
+                                                .font(.title2)
+                                                .fontWeight(.bold)
+                                            
+                                            Text("I'm listening and ready for your questions about life, wisdom, and philosophy.")
+                                                .font(.body)
+                                                .multilineTextAlignment(.center)
+                                                .foregroundColor(.secondary)
+                                            
+                                            Text("Just start speaking - no need to tap anything!")
+                                                .font(.caption)
+                                                .fontWeight(.medium)
+                                                .foregroundColor(.blue)
+                                        }
                                     }
+                                    .padding(.horizontal, 40)
+                                    .padding(.vertical, 60)
+                                } else {
+                                    VStack(spacing: 16) {
+                                        Image(systemName: "mic.slash.circle")
+                                            .font(.system(size: 60))
+                                            .foregroundColor(.orange)
+                                        
+                                        VStack(spacing: 8) {
+                                            Text("🏛️ Welcome to Plato")
+                                                .font(.title2)
+                                                .fontWeight(.bold)
+                                            
+                                            Text("To enable voice conversations, please grant microphone and speech recognition permissions in Settings.")
+                                                .font(.body)
+                                                .multilineTextAlignment(.center)
+                                                .foregroundColor(.secondary)
+                                            
+                                            Button("Open Settings") {
+                                                if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
+                                                    UIApplication.shared.open(settingsUrl)
+                                                }
+                                            }
+                                            .buttonStyle(.borderedProminent)
+                                            .padding(.top, 8)
+                                            
+                                            Text("You can still type questions below!")
+                                                .font(.caption)
+                                                .fontWeight(.medium)
+                                                .foregroundColor(.blue)
+                                        }
+                                    }
+                                    .padding(.horizontal, 40)
+                                    .padding(.vertical, 60)
                                 }
-                                .padding(.horizontal, 40)
-                                .padding(.vertical, 60)
                             }
                             
                             // Chat messages
@@ -177,8 +211,8 @@ struct ContentView: View {
                 .padding(.vertical, 6)
                 .background(Color(.systemGray6))
                 
-                // Manual text input (only when always-listening is off)
-                if !isAlwaysListening {
+                // Manual text input (always available, but especially when permissions denied)
+                if !isAlwaysListening || !speechRecognizer.isAuthorized {
                     VStack(spacing: 12) {
                         // Text Input Row
                         HStack(spacing: 12) {
@@ -247,12 +281,15 @@ struct ContentView: View {
                     askQuestion(transcript)
                 }
                 
-                // Start always-listening after a brief delay
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    if isAlwaysListening {
+                hasShownWelcome = true
+            }
+            .onChange(of: speechRecognizer.isAuthorized) { isAuthorized in
+                // Start always-listening when authorization is granted
+                if isAuthorized && isAlwaysListening && !speechRecognizer.isRecording {
+                    print("Authorization granted - starting always-listening")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                         speechRecognizer.startAlwaysListening()
                     }
-                    hasShownWelcome = true
                 }
             }
             .onDisappear {
@@ -348,7 +385,10 @@ struct ContentView: View {
                 
                 // Start voice generation in parallel
                 Task {
+                    print("🎭 Starting voice generation for: '\(response.prefix(50))...'")
+                    print("🔑 ElevenLabs configured: \(elevenLabsService.isConfigured)")
                     await elevenLabsService.speak(response)
+                    print("🎭 Voice generation completed")
                 }
                 
             } catch {
