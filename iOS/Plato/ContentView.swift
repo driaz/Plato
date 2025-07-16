@@ -175,8 +175,8 @@ struct ContentView: View {
                             Text("Processing your question...")
                                 .font(.caption)
                                 .foregroundColor(.blue)
-                        } else if elevenLabsService.isSpeaking {
-                            Text("AI is speaking (listening paused)...")
+                        } else if elevenLabsService.isSpeaking || speechRecognizer.isMonitoringForInterruption {
+                            Text("AI is speaking (you can interrupt anytime)...")
                                 .font(.caption)
                                 .foregroundColor(.orange)
                         } else if speechRecognizer.isRecording && !inputText.isEmpty {
@@ -281,6 +281,12 @@ struct ContentView: View {
                     askQuestion(transcript)
                 }
                 
+                // Set up interruption callback
+                speechRecognizer.onInterruption = {
+                    print("🚨 User interrupted AI - stopping voice playback")
+                    elevenLabsService.stopSpeaking()
+                }
+                
                 hasShownWelcome = true
             }
             .onChange(of: speechRecognizer.isAuthorized) { isAuthorized in
@@ -302,17 +308,17 @@ struct ContentView: View {
                 }
             }
             .onChange(of: elevenLabsService.isSpeaking) { isSpeaking in
-                // Pause/resume listening based on AI speaking state
+                // For now, let's disable interruption monitoring and focus on basic voice functionality
                 print("AI speaking state changed: \(isSpeaking)")
                 if isAlwaysListening {
                     if isSpeaking {
-                        // Pause listening while AI is speaking
+                        // Just pause listening while AI speaks - no interruption monitoring
                         print("Pausing listening - AI started speaking")
                         speechRecognizer.pauseListening()
                     } else {
                         // Resume listening when AI finishes speaking
-                        print("AI finished speaking - resuming in 1 second...")
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        print("AI finished speaking - resuming in 2 seconds...")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { // Longer delay
                             print("Attempting to resume listening...")
                             speechRecognizer.resumeListening()
                         }

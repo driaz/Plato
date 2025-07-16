@@ -16,11 +16,17 @@ class SpeechRecognizer: ObservableObject {
     @Published var isRecording: Bool = false
     @Published var isAuthorized: Bool = false
     @Published var isProcessing: Bool = false
+    @Published var isMonitoringForInterruption: Bool = false
     
     private var audioEngine = AVAudioEngine()
     private var speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
+    
+    // Interruption monitoring
+    private var interruptionEngine = AVAudioEngine()
+    private var interruptionRecognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var interruptionRecognitionTask: SFSpeechRecognitionTask?
     
     // Auto-upload functionality
     private var silenceTimer: Timer?
@@ -30,8 +36,14 @@ class SpeechRecognizer: ObservableObject {
     private var isAlwaysListening = false
     private var isPaused = false
     
-    // Callback for auto-upload
+    // Interruption detection
+    private let interruptionThreshold: TimeInterval = 0.8
+    private var interruptionTimer: Timer?
+    private var currentAIResponse: String = ""
+    
+    // Callbacks
     var onAutoUpload: ((String) -> Void)?
+    var onInterruption: (() -> Void)?
     
     init() {
         speechRecognizer?.defaultTaskHint = .dictation
@@ -89,7 +101,7 @@ class SpeechRecognizer: ObservableObject {
         stopRecording()
     }
     
-    func pauseListening() {
+    func pauseListening(aiResponse: String = "") {
         print("pauseListening called - isRecording: \(isRecording), isAlwaysListening: \(isAlwaysListening)")
         if isAlwaysListening {
             print("Setting paused state while AI speaks...")
@@ -97,15 +109,22 @@ class SpeechRecognizer: ObservableObject {
             if isRecording {
                 stopRecording()
             }
+            
+            // DISABLED: No interruption monitoring for now to fix audio issues
+            // startInterruptionMonitoring(aiResponse: aiResponse)
         }
     }
     
     func resumeListening() {
         print("resumeListening called - isAlwaysListening: \(isAlwaysListening), isRecording: \(isRecording), isPaused: \(isPaused)")
+        
+        // Stop interruption monitoring
+        stopInterruptionMonitoring()
+        
         if isAlwaysListening && !isRecording && isPaused {
             print("Resuming listening after AI finished speaking...")
             isPaused = false
-            transcript = "" // Clear any picked-up AI speech
+            transcript = ""
             hasContent = false
             startRecording()
         } else {
@@ -136,22 +155,18 @@ class SpeechRecognizer: ObservableObject {
             recognitionTask = nil
         }
         
-        // Configure audio session with better error handling
+        // Configure audio session
         let audioSession = AVAudioSession.sharedInstance()
         do {
-            // First deactivate any existing session
             try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
-            
-            // Configure for recording (remove defaultToSpeaker option)
             try audioSession.setCategory(.record, mode: .measurement, options: [.duckOthers])
             try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
             print("✅ Audio session configured successfully")
         } catch {
             print("Failed to set up audio session: \(error)")
-            // Don't return here - try to continue anyway
         }
         
-        // Create recognition request with better settings
+        // Create recognition request
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let recognitionRequest = recognitionRequest else {
             print("Unable to create recognition request")
@@ -160,14 +175,12 @@ class SpeechRecognizer: ObservableObject {
         
         // Enhanced recognition settings for maximum accuracy
         recognitionRequest.shouldReportPartialResults = true
-        recognitionRequest.requiresOnDeviceRecognition = false // Server has better accuracy
-        recognitionRequest.taskHint = .dictation // Best for conversational speech
+        recognitionRequest.requiresOnDeviceRecognition = false
+        recognitionRequest.taskHint = .dictation
         
         // Add comprehensive context hints for better recognition
         if #available(iOS 16.0, *) {
             recognitionRequest.addsPunctuation = true
-            
-            // Extensive contextual vocabulary for philosophical conversations
             recognitionRequest.contextualStrings = [
                 // Stoic philosophers
                 "Marcus Aurelius", "Epictetus", "Seneca", "Plato",
@@ -192,37 +205,27 @@ class SpeechRecognizer: ObservableObject {
             ]
         }
         
-        // For iOS 15 and earlier, we'll rely on post-processing corrections
         if #available(iOS 17.0, *) {
-            // iOS 17+ has even better recognition capabilities
             recognitionRequest.interactionIdentifier = "philosophical_conversation"
         }
         
-        // Get input node with error handling
+        // Get input node
         let inputNode = audioEngine.inputNode
-        
-        // Remove any existing taps
         inputNode.removeTap(onBus: 0)
         
         // Create recognition task
         recognitionTask = speechRecognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
             DispatchQueue.main.async {
                 if let result = result {
-                    // Get the best transcription
                     let transcription = result.bestTranscription.formattedString
-                    
-                    // Apply post-processing corrections
                     let correctedText = self?.correctCommonMistakes(transcription) ?? transcription
                     self?.transcript = correctedText
                     
-                    // Update timestamp and content flag
                     self?.lastTranscriptUpdate = Date()
                     self?.hasContent = !correctedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     
-                    // Reset silence timer
                     self?.resetSilenceTimer()
                     
-                    // If this is a final result with content, process immediately
                     if result.isFinal && self?.hasContent == true {
                         self?.processAutoUpload()
                     }
@@ -235,7 +238,7 @@ class SpeechRecognizer: ObservableObject {
             }
         }
         
-        // Configure audio input with better quality settings
+        // Configure audio input
         let recordingFormat = inputNode.outputFormat(forBus: 0)
         
         do {
@@ -248,7 +251,7 @@ class SpeechRecognizer: ObservableObject {
             return
         }
         
-        // Start audio engine with error handling
+        // Start audio engine
         audioEngine.prepare()
         do {
             try audioEngine.start()
@@ -261,15 +264,50 @@ class SpeechRecognizer: ObservableObject {
         }
     }
     
-    // Post-processing to fix common philosophical term mistakes while preserving natural speech
+    func stopRecording() {
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+        
+        stopInterruptionMonitoring()
+        
+        if audioEngine.isRunning {
+            audioEngine.stop()
+            audioEngine.inputNode.removeTap(onBus: 0)
+        }
+        
+        recognitionRequest?.endAudio()
+        recognitionRequest = nil
+        
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        
+        isRecording = false
+        hasContent = false
+        
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            print("Failed to deactivate audio session: \(error)")
+        }
+    }
+    
+    func manualUpload() {
+        silenceTimer?.invalidate()
+        if hasContent {
+            processAutoUpload()
+        }
+    }
+    
+    // MARK: - Text Processing
+    
     private func correctCommonMistakes(_ text: String) -> String {
         var corrected = text
         
-        // Step 1: Fix philosophical term misrecognitions
+        // Fix philosophical term misrecognitions
         let philosophicalCorrections: [String: String] = [
             "markets": "Marcus",
             "market": "Marcus",
-            "Marcus": "Marcus Aurelius", // Expand to full name
+            "Marcus": "Marcus Aurelius",
             "epic": "Epictetus",
             "epics": "Epictetus",
             "seneca": "Seneca",
@@ -278,7 +316,6 @@ class SpeechRecognizer: ObservableObject {
             "stoicism": "Stoicism"
         ]
         
-        // Apply philosophical corrections with word boundaries
         for (mistake, correction) in philosophicalCorrections {
             let pattern = "\\b\(NSRegularExpression.escapedPattern(for: mistake))\\b"
             corrected = corrected.replacingOccurrences(
@@ -288,18 +325,15 @@ class SpeechRecognizer: ObservableObject {
             )
         }
         
-        // Step 2: Normalize colloquial speech for better AI understanding
         corrected = normalizeColloquialSpeech(corrected)
-        
         return corrected
     }
     
     private func normalizeColloquialSpeech(_ text: String) -> String {
         var normalized = text
         
-        // Step 1: Fix common speech recognition errors for philosophical phrases
+        // Fix common speech recognition errors for philosophical phrases
         let phraseCorrections: [String: String] = [
-            // Meditation and mindfulness phrases
             "sit and stillness": "sit in stillness",
             "sit in silence": "sit in silence",
             "inner piece": "inner peace",
@@ -308,28 +342,21 @@ class SpeechRecognizer: ObservableObject {
             "present mmoment": "present moment",
             "letting goal": "letting go",
             "let it goal": "let it go",
-            
-            // Philosophical concepts
             "ancient wisdom": "ancient wisdom",
             "stoic principals": "Stoic principles",
             "self reflection": "self-reflection",
             "mental clarity": "mental clarity",
             "emotional control": "emotional control",
-            
-            // Common action phrases
             "except it": "accept it",
             "except what": "accept what",
             "breathe deeply": "breathe deeply",
             "find balance": "find balance",
-            
-            // Question patterns
             "how do i": "how do I",
             "what would": "what would",
             "how can i": "how can I",
             "what should i": "what should I"
         ]
         
-        // Apply phrase corrections first (before word-level fixes)
         for (incorrect, correct) in phraseCorrections {
             normalized = normalized.replacingOccurrences(
                 of: incorrect,
@@ -338,44 +365,32 @@ class SpeechRecognizer: ObservableObject {
             )
         }
         
-        // Step 2: Handle colloquial speech normalization
+        // Handle colloquial speech
         let colloquialMappings: [String: String] = [
-            // Filler words - keep some, remove excessive
-            " uh uh ": " uh ",           // Reduce double fillers
+            " uh uh ": " uh ",
             " um um ": " um ",
             " like like ": " like ",
-            
-            // Common contractions and casual speech
             "kinda": "kind of",
             "gonna": "going to",
             "wanna": "want to",
             "gotta": "got to",
             "sorta": "sort of",
-            
-            // Question patterns
             "ya know": "you know",
             "y'know": "you know",
             "ya think": "you think",
-            
-            // Casual intensifiers
             "super ": "very ",
             "pretty ": "quite ",
             "really really": "really",
             "very very": "very",
-            
-            // Clean up excessive repetition while keeping natural flow
             "and and": "and",
             "but but": "but",
             "so so": "so",
             "the the": "the",
-            
-            // Fix common speech recognition errors
             "could of": "could have",
             "would of": "would have",
             "should of": "should have"
         ]
         
-        // Apply casual speech normalization
         for (casual, formal) in colloquialMappings {
             normalized = normalized.replacingOccurrences(
                 of: casual,
@@ -384,7 +399,7 @@ class SpeechRecognizer: ObservableObject {
             )
         }
         
-        // Step 3: Clean up spacing and punctuation
+        // Clean up spacing and punctuation
         normalized = normalized.replacingOccurrences(of: "  ", with: " ")
         normalized = normalized.replacingOccurrences(of: " ,", with: ",")
         normalized = normalized.replacingOccurrences(of: " .", with: ".")
@@ -399,7 +414,6 @@ class SpeechRecognizer: ObservableObject {
     private func resetSilenceTimer() {
         silenceTimer?.invalidate()
         
-        // Only start timer if we have content and are still recording
         guard hasContent && isRecording else { return }
         
         silenceTimer = Timer.scheduledTimer(withTimeInterval: silenceThreshold, repeats: false) { [weak self] _ in
@@ -414,13 +428,11 @@ class SpeechRecognizer: ObservableObject {
         
         isProcessing = true
         
-        // Small delay to show processing state
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             self.onAutoUpload?(self.transcript)
             
-            // In always-listening mode, stop recording and let the speaking detection restart it
             if self.isAlwaysListening {
-                self.stopRecording() // Don't auto-restart - let the speaking detection handle it
+                self.stopRecording()
             } else {
                 self.stopRecording()
             }
@@ -429,46 +441,231 @@ class SpeechRecognizer: ObservableObject {
         }
     }
     
-    func manualUpload() {
-        // Allow manual upload by stopping auto-timer and processing immediately
-        silenceTimer?.invalidate()
-        if hasContent {
-            processAutoUpload()
+    // MARK: - Interruption Monitoring
+    
+    func startInterruptionMonitoring(aiResponse: String = "") {
+        guard isAuthorized else {
+            print("Cannot start interruption monitoring - not authorized")
+            return
+        }
+        
+        guard !isMonitoringForInterruption else {
+            print("Already monitoring for interruption")
+            return
+        }
+        
+        currentAIResponse = aiResponse.lowercased()
+        print("🎤 Starting interruption monitoring while AI speaks: '\(aiResponse.prefix(30))...'")
+        
+        // Use the same audio session mode as playback to avoid conflicts
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+            try AVAudioSession.sharedInstance().setActive(true)
+            print("✅ Audio session configured for interruption monitoring (playAndRecord mode)")
+        } catch {
+            print("Failed to configure audio session for interruption monitoring: \(error)")
+            return
+        }
+        
+        interruptionRecognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+        guard let interruptionRequest = interruptionRecognitionRequest else {
+            print("Unable to create interruption recognition request")
+            return
+        }
+        
+        interruptionRequest.shouldReportPartialResults = true
+        interruptionRequest.requiresOnDeviceRecognition = false
+        interruptionRequest.taskHint = .dictation
+        
+        // MUCH SIMPLER: Just look for clear interruption patterns, ignore everything else
+        interruptionRecognitionTask = speechRecognizer?.recognitionTask(with: interruptionRequest) { [weak self] result, error in
+            DispatchQueue.main.async {
+                if let result = result {
+                    let transcription = result.bestTranscription.formattedString.trimmingCharacters(in: .whitespacesAndNewlines)
+                    
+                    // SIMPLE FILTER: Only accept clear interruption words
+                    if self?.isSimpleInterruption(transcription) == true {
+                        print("🚨 CLEAR INTERRUPTION DETECTED: '\(transcription)'")
+                        self?.handleInterruption(with: transcription)
+                    } else if !transcription.isEmpty {
+                        print("🔇 Ignored unclear speech: '\(transcription.prefix(20))...'")
+                    }
+                }
+                
+                if let error = error {
+                    print("Interruption monitoring error: \(error)")
+                    self?.stopInterruptionMonitoring()
+                }
+            }
+        }
+        
+        let inputNode = interruptionEngine.inputNode
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        inputNode.removeTap(onBus: 0)
+        
+        do {
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
+                interruptionRequest.append(buffer)
+            }
+        } catch {
+            print("Failed to install interruption monitoring tap: \(error)")
+            return
+        }
+        
+        interruptionEngine.prepare()
+        do {
+            try interruptionEngine.start()
+            isMonitoringForInterruption = true
+            print("✅ Simple interruption monitoring active")
+        } catch {
+            print("Failed to start interruption monitoring engine: \(error)")
+            stopInterruptionMonitoring()
         }
     }
     
-    func stopRecording() {
-        // Clean up timers first
-        silenceTimer?.invalidate()
-        silenceTimer = nil
+    // MUCH SIMPLER: Only accept clear interruption words
+    private func isSimpleInterruption(_ transcription: String) -> Bool {
+        let cleanTranscription = transcription.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         
-        // Stop audio engine safely
-        if audioEngine.isRunning {
-            audioEngine.stop()
-            
-            // Remove tap safely
-            let inputNode = audioEngine.inputNode
-            inputNode.removeTap(onBus: 0)
+        // Must be substantial
+        guard cleanTranscription.count > 2 else {
+            return false
         }
         
-        // Clean up recognition request
-        recognitionRequest?.endAudio()
-        recognitionRequest = nil
+        // VERY STRICT: Only accept phrases that clearly start with interruption words OR contain them prominently
+        let clearInterruptions = [
+            "wait", "stop", "hold on", "excuse me", "actually", "but", "no",
+            "let me", "can you", "what about", "how about", "hey", "sorry",
+            "i want", "i need", "i have", "question", "can i ask"
+        ]
         
-        // Cancel recognition task
-        recognitionTask?.cancel()
-        recognitionTask = nil
+        // Check if it starts with interruption words OR contains them prominently
+        let hasInterruption = clearInterruptions.contains { word in
+            cleanTranscription.hasPrefix(word + " ") ||
+            cleanTranscription == word ||
+            cleanTranscription.hasPrefix(word) ||
+            cleanTranscription.contains(" " + word + " ") ||  // Contains word with spaces around it
+            cleanTranscription.hasSuffix(" " + word)          // Ends with the word
+        }
         
-        // Update state
-        isRecording = false
-        hasContent = false
+        if hasInterruption {
+            print("✅ Clear interruption detected: '\(cleanTranscription)'")
+            return true
+        }
         
-        // Deactivate audio session with better error handling
-        do {
-            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        } catch {
-            print("Failed to deactivate audio session: \(error)")
-            // Continue anyway - this is not critical
+        print("🔇 Not a clear interruption: '\(cleanTranscription)'")
+        return false
+    }
+    
+    func stopInterruptionMonitoring() {
+        guard isMonitoringForInterruption else { return }
+        
+        print("🛑 Stopping interruption monitoring")
+        
+        interruptionTimer?.invalidate()
+        interruptionTimer = nil
+        
+        if interruptionEngine.isRunning {
+            interruptionEngine.stop()
+            interruptionEngine.inputNode.removeTap(onBus: 0)
+        }
+        
+        interruptionRecognitionRequest?.endAudio()
+        interruptionRecognitionRequest = nil
+        
+        interruptionRecognitionTask?.cancel()
+        interruptionRecognitionTask = nil
+        
+        isMonitoringForInterruption = false
+        
+        print("✅ Interruption monitoring stopped")
+    }
+    
+    private func isGenuineUserInterruption(_ transcription: String) -> Bool {
+        let cleanTranscription = transcription.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // Lower threshold for interruption detection
+        guard cleanTranscription.count > 3 else {
+            print("🔇 Too short to be interruption: '\(cleanTranscription)'")
+            return false
+        }
+        
+        var matchPercentage = 0.0
+        
+        if !currentAIResponse.isEmpty {
+            let aiWords = currentAIResponse.components(separatedBy: " ").filter { !$0.isEmpty }
+            let transcriptionWords = cleanTranscription.components(separatedBy: " ").filter { !$0.isEmpty }
+            
+            // More sophisticated matching - look for exact sequence matches
+            let matchingWords = transcriptionWords.filter { word in
+                aiWords.contains { aiWord in
+                    // Exact match or very close match
+                    word == aiWord || (word.count > 3 && aiWord.contains(word)) || (aiWord.count > 3 && word.contains(aiWord))
+                }
+            }
+            
+            matchPercentage = transcriptionWords.isEmpty ? 0.0 : Double(matchingWords.count) / Double(transcriptionWords.count)
+            
+            // Only filter if it's a very high match (90% instead of 70%)
+            if matchPercentage > 0.9 {
+                print("🔇 Filtered AI echo (\(Int(matchPercentage * 100))% match): '\(cleanTranscription)'")
+                return false
+            }
+        }
+        
+        // Look for clear interruption patterns
+        let interruptionStarters = [
+            "actually", "wait", "hold on", "stop", "excuse me", "sorry", "no", "but",
+            "let me", "can you", "what about", "how about", "but what",
+            "actually let me", "wait a minute", "hold up", "one second", "hey",
+            "i want", "i need", "can i", "let me ask", "i have a", "question"
+        ]
+        
+        let hasInterruptionPattern = interruptionStarters.contains { starter in
+            cleanTranscription.hasPrefix(starter) || cleanTranscription.contains(" \(starter) ")
+        }
+        
+        // Look for question patterns
+        let hasQuestionPattern = cleanTranscription.contains("?") ||
+                                cleanTranscription.hasPrefix("how ") ||
+                                cleanTranscription.hasPrefix("what ") ||
+                                cleanTranscription.hasPrefix("why ") ||
+                                cleanTranscription.hasPrefix("when ") ||
+                                cleanTranscription.hasPrefix("where ") ||
+                                cleanTranscription.hasPrefix("can ") ||
+                                cleanTranscription.hasPrefix("will ") ||
+                                cleanTranscription.hasPrefix("do ")
+        
+        // Look for words that are unlikely to be in AI response
+        let userSpecificWords = ["i", "me", "my", "myself", "you", "your", "want", "need", "think", "feel"]
+        let hasUserWords = userSpecificWords.contains { userWord in
+            cleanTranscription.components(separatedBy: " ").contains(userWord)
+        }
+        
+        // Be more lenient - accept if ANY of these conditions are met
+        let isGenuine = hasInterruptionPattern || hasQuestionPattern || hasUserWords || matchPercentage < 0.5
+        
+        if isGenuine {
+            print("✅ Genuine interruption detected: '\(cleanTranscription)' - pattern=\(hasInterruptionPattern), question=\(hasQuestionPattern), userWords=\(hasUserWords), match=\(Int(matchPercentage * 100))%")
+        } else {
+            print("🔇 Not recognized as interruption: '\(cleanTranscription)' - match=\(Int(matchPercentage * 100))%")
+        }
+        
+        return isGenuine
+    }
+    
+    private func handleInterruption(with speech: String) {
+        print("🚨 Processing interruption: '\(speech)'")
+        
+        stopInterruptionMonitoring()
+        
+        transcript = speech
+        hasContent = true
+        
+        onInterruption?()
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.processAutoUpload()
         }
     }
 }
