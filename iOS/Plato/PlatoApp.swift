@@ -9,6 +9,12 @@ import SwiftUI
 
 @main
 struct PlatoApp: App {
+    
+    init() {
+           // Configure audio session once at launch
+           AudioSessionManager.shared.configureForDuplex()
+       }
+    
     var body: some Scene {
         WindowGroup {
             ContentView()
