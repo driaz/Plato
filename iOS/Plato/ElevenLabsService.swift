@@ -2,280 +2,371 @@
 //  ElevenLabsService.swift
 //  Plato
 //
-//  Created by Daniel Riaz on 7/13/25.
-// /Users/danielriaz/Projects/Plato/iOS/Plato/ElevenLabsService.swift
+//  Streaming PCM for low-latency playback; NSObject base for delegate conformance.
+//
 
 import Foundation
 import AVFoundation
 
-// MARK: - ElevenLabs API Models
-struct ElevenLabsRequest: Codable {
-    let text: String
-    let modelId: String
-    let voiceSettings: VoiceSettings
-    
-    enum CodingKeys: String, CodingKey {
-        case text
-        case modelId = "model_id"
-        case voiceSettings = "voice_settings"
-    }
-}
 
-struct VoiceSettings: Codable {
-    let stability: Double
-    let similarityBoost: Double
-    let style: Double
-    let useSpeakerBoost: Bool
-    
-    enum CodingKeys: String, CodingKey {
-        case stability
-        case similarityBoost = "similarity_boost"
-        case style
-        case useSpeakerBoost = "use_speaker_boost"
-    }
-}
-
-// MARK: - ElevenLabs Service
-@MainActor
-class ElevenLabsService: NSObject, ObservableObject {
+final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate  {
     @Published var isSpeaking: Bool = false
     @Published var isGenerating: Bool = false
     
-    private let apiKey: String
-    private let voiceId: String = "JBFqnCBsd6RMkjVDRZzb" // George voice - warm, wise tone
-    private let baseURL = "https://api.elevenlabs.io/v1/text-to-speech"
+    private let cfg = ConfigManager.shared
+    private let base = "https://api.elevenlabs.io/v1/text-to-speech"
     
-    private var audioPlayer: AVAudioPlayer?
+    // playback
+    private var player: StreamingPlayer?
+    private var fallbackSynth: AVSpeechSynthesizer?
+    
+    private var mp3Player: AVAudioPlayer?
     
     override init() {
-        self.apiKey = ConfigManager.shared.elevenLabsAPIKey
         super.init()
-        setupAudioSession()
     }
     
-    private func setupAudioSession() {
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            print("Failed to set up audio session for ElevenLabs: \(error)")
-        }
-    }
+    // MARK: - Public
     
-    func speak(_ text: String) async {
-        print("🎭 ElevenLabs speak called with: '\(text.prefix(50))...'")
-        print("🔑 API Key configured: \(!apiKey.isEmpty)")
-        
-        guard !apiKey.isEmpty else {
-            print("🔄 ElevenLabs API key not configured, falling back to system TTS")
-            await fallbackToSystemTTS(text)
+    /// Speak text using streaming ElevenLabs TTS when available; fallback to system TTS otherwise.
+    /// Speak text (Phase 1 latency test mode: force Apple system TTS; skip ElevenLabs network).
+    func speak(_ raw: String) async {
+        stopSpeaking()
+        let text = Self.cleanText(raw)
+
+        // if streaming is OFF (current state), do blocking George
+        if !cfg.useStreamingTTS {
+            do {
+                try await speakBlockingGeorge(text)
+            } catch {
+                print("⚠️ George blocking error: \(error) — fallback system TTS.")
+                await fallbackSystemTTS(text)
+            }
             return
         }
-        
-        // Clean text for speech before processing
-        let cleanedText = cleanTextForSpeech(text)
-        print("🧹 Cleaned text: '\(cleanedText.prefix(50))...'")
-        
+
+        // streaming path (we’ll finish this later)
         isGenerating = true
-        
         do {
-            print("🎵 Starting ElevenLabs generation...")
-            let audioData = try await generateSpeech(text: cleanedText)
-            print("✅ ElevenLabs generation successful, data size: \(audioData.count) bytes")
-            await playAudio(data: audioData)
-            print("🔊 Audio playback completed")
+            try await streamPCM(text: text)   // will be replaced w/ MP3 stream decode soon
         } catch {
-            print("❌ ElevenLabs TTS error: \(error), falling back to system TTS")
-            await fallbackToSystemTTS(cleanedText)
+            print("⚠️ George streaming error: \(error) — fallback system TTS.")
+            await fallbackSystemTTS(text)
         }
-        
         isGenerating = false
     }
+
+
     
-    private func cleanTextForSpeech(_ text: String) -> String {
-        var cleaned = text
-        
-        // Remove common markdown formatting
-        cleaned = cleaned.replacingOccurrences(of: "**", with: "") // Bold
-        cleaned = cleaned.replacingOccurrences(of: "*", with: "")  // Italics
-        cleaned = cleaned.replacingOccurrences(of: "_", with: "")  // Underline
-        cleaned = cleaned.replacingOccurrences(of: "`", with: "")  // Code
-        cleaned = cleaned.replacingOccurrences(of: "#", with: "")  // Headers
-        cleaned = cleaned.replacingOccurrences(of: "~", with: "")  // Strikethrough
-        
-        // Clean up bullet points and lists
-        cleaned = cleaned.replacingOccurrences(of: "• ", with: "")
-        cleaned = cleaned.replacingOccurrences(of: "- ", with: "")
-        cleaned = cleaned.replacingOccurrences(of: "+ ", with: "")
-        
-        // Replace em dashes with regular dashes for better speech
-        cleaned = cleaned.replacingOccurrences(of: "—", with: " - ")
-        cleaned = cleaned.replacingOccurrences(of: "–", with: " - ")
-        
-        // Clean up multiple spaces and line breaks
-        cleaned = cleaned.replacingOccurrences(of: "\n\n", with: ". ")
-        cleaned = cleaned.replacingOccurrences(of: "\n", with: " ")
-        cleaned = cleaned.replacingOccurrences(of: "  ", with: " ")
-        
-        // Remove any remaining special characters that sound bad
-        cleaned = cleaned.replacingOccurrences(of: "[", with: "")
-        cleaned = cleaned.replacingOccurrences(of: "]", with: "")
-        cleaned = cleaned.replacingOccurrences(of: "{", with: "")
-        cleaned = cleaned.replacingOccurrences(of: "}", with: "")
-        
-        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Stop streaming / playback immediately.
+    func stopSpeaking() {
+        player?.stop()      // if you still have StreamingPlayer
+        player = nil
+        mp3Player?.stop()
+        mp3Player = nil
+        if let synth = fallbackSynth, synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
+        fallbackSynth = nil
+        isSpeaking = false
     }
+
     
-    private func generateSpeech(text: String) async throws -> Data {
-        let url = URL(string: "\(baseURL)/\(voiceId)")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
+    var isConfigured: Bool { cfg.hasElevenLabs }
+    
+    // MARK: - Streaming core
+    
+    /// Open a streaming ElevenLabs request and feed raw PCM into StreamingPlayer.
+    private func streamPCM(text: String) async throws {
         
-        let requestBody = ElevenLabsRequest(
-            text: text,
-            modelId: "eleven_turbo_v2_5", // Faster model for reduced latency
-            voiceSettings: VoiceSettings(
-                stability: 0.6,        // More stable for philosophical content
-                similarityBoost: 0.8,  // Higher similarity for consistency
-                style: 0.2,           // Reduced style for faster generation
-                useSpeakerBoost: true  // Enhanced clarity
-            )
-        )
+        // Build request
+        let url = URL(string: "\(base)/\(cfg.elevenLabsVoiceId)/stream?optimize_streaming_latency=\(cfg.elevenLabsLatencyMode)")!
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue(cfg.elevenLabsAPIKey, forHTTPHeaderField: "xi-api-key")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Ask for raw PCM container
+        req.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
         
-        request.httpBody = try JSONEncoder().encode(requestBody)
+        let body: [String: Any] = [
+            "text": text,
+            "model_id": "eleven_turbo_v2_5",
+            "voice_settings": [
+                "stability": 0.6,
+                "similarity_boost": 0.8,
+                "style": 0.2,
+                "use_speaker_boost": true
+            ],
+            "output_format": "pcm_22050"  // 16-bit LE mono @ 22.05kHz
+        ]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
         
-        let (data, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
+        // Perform streaming request (this await runs off-main in URLSession)
+        let (bytes, response) = try await URLSession.shared.bytes(for: req)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw ElevenLabsError.invalidResponse
         }
         
-        guard httpResponse.statusCode == 200 else {
-            throw ElevenLabsError.apiError(httpResponse.statusCode)
-        }
+        // Prepare player when stream confirmed
+        player = StreamingPlayer()
+        isSpeaking = true
         
-        return data
-    }
-    
-    private func playAudio(data: Data) async {
-        do {
-            // Pre-configure audio session for playback
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
-            try AVAudioSession.sharedInstance().setActive(true)
+        // Buffer & schedule in batches to avoid tiny pops
+        var pending = Data()
+        
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            pending.append(byte)
             
-            audioPlayer = try AVAudioPlayer(data: data)
-            audioPlayer?.delegate = self
-            audioPlayer?.prepareToPlay() // Pre-buffer audio for faster start
-            
-            await MainActor.run {
-                isSpeaking = true
-                print("🔊 Starting audio playback - isSpeaking set to TRUE")
-            }
-            
-            audioPlayer?.play()
-            
-            // Wait for playback to complete more efficiently
-            while audioPlayer?.isPlaying == true {
-                try await Task.sleep(nanoseconds: 50_000_000) // Check every 0.05 seconds
-            }
-            
-            await MainActor.run {
-                isSpeaking = false
-                print("🔊 Audio playback finished - isSpeaking set to FALSE")
-            }
-            
-        } catch {
-            print("Failed to play ElevenLabs audio: \(error)")
-            await MainActor.run {
-                isSpeaking = false
-                print("🔊 Audio playback failed - isSpeaking set to FALSE")
+            // schedule when we have enough buffered audio
+            if pending.count >= 4096 {
+                let send = pending
+                pending.removeAll(keepingCapacity: true)
+                player?.schedule(send)
+                player?.play()
             }
         }
-    }
-    
-    private func fallbackToSystemTTS(_ text: String) async {
-        print("🔄 Using system TTS fallback")
-        // Clean text for system TTS too
-        let cleanedText = cleanTextForSpeech(text)
+
         
-        // Configure audio session for playback
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            print("Failed to configure audio session for system TTS: \(error)")
+        // flush remainder
+        if !pending.isEmpty {
+            player?.schedule(pending)
+            player?.play()
         }
         
-        // Fallback to Apple's system TTS if ElevenLabs fails
-        let synthesizer = AVSpeechSynthesizer()
-        let utterance = AVSpeechUtterance(string: cleanedText)
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.85 // Slightly slower
-        
-        await MainActor.run {
-            isSpeaking = true
-            print("🔊 System TTS starting - isSpeaking set to TRUE")
-        }
-        
-        synthesizer.speak(utterance)
-        
-        // Simple wait for system TTS (approximate)
-        let estimatedDuration = Double(cleanedText.count) * 0.08 // Rough estimate
-        try? await Task.sleep(nanoseconds: UInt64(estimatedDuration * 1_000_000_000))
-        
-        await MainActor.run {
-            isSpeaking = false
-            print("🔊 System TTS completed - isSpeaking set to FALSE")
-        }
-        
-        print("🔊 System TTS completed")
-    }
-    
-    func stopSpeaking() {
-        audioPlayer?.stop()
+        // done
         isSpeaking = false
     }
     
-    var isConfigured: Bool {
-        return !apiKey.isEmpty
+    // MARK: - Stream Request Builder (debug & reuse)
+    private func makeStreamRequest(
+        _ text: String,
+        accept: String = "application/octet-stream",
+        outputFormat: String = "pcm_22050"
+    ) throws -> URLRequest {
+        // ElevenLabs streaming endpoint
+        let url = URL(string: "\(base)/\(cfg.elevenLabsVoiceId)/stream?optimize_streaming_latency=\(cfg.elevenLabsLatencyMode)")!
+        
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue(cfg.elevenLabsAPIKey, forHTTPHeaderField: "xi-api-key")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(accept, forHTTPHeaderField: "Accept")  // format hint
+        
+        let body: [String: Any] = [
+            "text": text,
+            "model_id": "eleven_turbo_v2_5",
+            "voice_settings": [
+                "stability": 0.6,
+                "similarity_boost": 0.8,
+                "style": 0.2,
+                "use_speaker_boost": true
+            ],
+            "output_format": outputFormat
+        ]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return req
     }
-}
+    
+    /// Debug helper: open a streaming ElevenLabs request, read the first ~512 bytes,
+    /// and print a hex + ASCII dump so we can identify the audio container.
+    /// Safe to call even when streaming TTS is disabled in config.
+    func debugProbeStreamFormat(
+        sampleText: String = "Testing ElevenLabs streaming.",
+        accept: String = "application/octet-stream",
+        outputFormat: String = "pcm_22050",
+        maxBytes: Int = 512
+    ) async {
+        do {
+            // Build request
+            let req = try makeStreamRequest(sampleText, accept: accept, outputFormat: outputFormat)
+            
+            // Execute streaming request
+            let (bytes, response) = try await URLSession.shared.bytes(for: req)
+            if let http = response as? HTTPURLResponse {
+                print("🧪 Probe HTTP status:", http.statusCode)
+                print("🧪 Probe Content-Type:", http.value(forHTTPHeaderField: "Content-Type") ?? "nil")
+            }
+            
+            // Capture first N bytes
+            var captured = Data()
+            var count = 0
+            for try await b in bytes {
+                captured.append(b)
+                count += 1
+                if count >= maxBytes { break }
+            }
+            
+            print("🧪 Probe captured \(captured.count) bytes.")
+            hexDump(captured)
+            identifyFormat(from: captured)
+            
+        } catch {
+            print("🧪 Probe error:", error)
+        }
+    }
 
-// MARK: - AVAudioPlayerDelegate
-extension ElevenLabsService: AVAudioPlayerDelegate {
-    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        DispatchQueue.main.async {
+    
+    // MARK: - System fallback
+    
+    private func fallbackSystemTTS(_ text: String) async {
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.85
+        
+        let synth = AVSpeechSynthesizer()
+        synth.delegate = self
+        fallbackSynth = synth
+        
+        isSpeaking = true
+        synth.speak(utterance)
+        
+        // We don't await here; delegate callbacks update isSpeaking.
+    }
+    
+    // MARK: - Delegate
+    
+    nonisolated func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish _: AVSpeechUtterance) {
+        Task { @MainActor in
             self.isSpeaking = false
+            self.fallbackSynth = nil
         }
     }
     
-    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
-        DispatchQueue.main.async {
+    nonisolated func speechSynthesizer(_ s: AVSpeechSynthesizer, didCancel _: AVSpeechUtterance) {
+        Task { @MainActor in
             self.isSpeaking = false
-            if let error = error {
-                print("Audio player decode error: \(error)")
+            self.fallbackSynth = nil
+        }
+    }
+    
+    // MARK: - Utilities
+    
+    private static func cleanText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "*",  with: "")
+            .replacingOccurrences(of: "_",  with: "")
+            .replacingOccurrences(of: "`",  with: "")
+            .replacingOccurrences(of: "#",  with: "")
+            .replacingOccurrences(of: "~",  with: "")
+            .replacingOccurrences(of: "\n\n", with: ". ")
+            .replacingOccurrences(of: "\n", with: " ")
+    }
+    
+    // MARK: - Debug helpers
+    private func hexDump(_ data: Data, bytesPerRow: Int = 16) {
+        guard !data.isEmpty else {
+            print("🧪 (no data)")
+            return
+        }
+        data.withUnsafeBytes { raw in
+            let ptr = raw.bindMemory(to: UInt8.self)
+            for row in stride(from: 0, to: data.count, by: bytesPerRow) {
+                let end = min(row + bytesPerRow, data.count)
+                let slice = ptr[row..<end]
+                let hex = slice.map { String(format: "%02X", $0) }.joined(separator: " ")
+                let ascii = slice.map { c -> String in
+                    (c >= 0x20 && c < 0x7F) ? String(UnicodeScalar(c)) : "."
+                }.joined()
+                print(String(format: "%04X  %-*s  |%@|",
+                             row, bytesPerRow * 3, hex, ascii))
             }
         }
     }
-}
 
-// MARK: - Error Types
-enum ElevenLabsError: LocalizedError {
-    case invalidResponse
-    case apiError(Int)
-    case noAPIKey
-    
-    var errorDescription: String? {
-        switch self {
-        case .invalidResponse:
-            return "Invalid response from ElevenLabs"
-        case .apiError(let code):
-            return "ElevenLabs API Error: \(code)"
-        case .noAPIKey:
-            return "ElevenLabs API key not configured"
+    private func identifyFormat(from data: Data) {
+        if data.count >= 4 {
+            let prefix = data.prefix(4)
+            if prefix == Data([0x52, 0x49, 0x46, 0x46]) { // "RIFF"
+                print("🧪 Guess: WAV container (RIFF).")
+                return
+            }
+            if prefix == Data([0x49, 0x44, 0x33]) { // "ID3" MP3 tag
+                print("🧪 Guess: MP3 (ID3 header).")
+                return
+            }
+            if prefix[0] == 0xFF && (prefix[1] & 0xE0) == 0xE0 {
+                print("🧪 Guess: MP3 frame sync (no ID3).")
+                return
+            }
+        }
+        // Check for long runs of low-magnitude bytes (likely PCM)
+        let avg = data.reduce(0.0) { $0 + Double($1) } / Double(max(data.count, 1))
+        if avg < 5 {  // crude heuristic
+            print("🧪 Guess: raw PCM (low magnitude).")
+        } else {
+            print("🧪 Guess: unknown / compressed.")
         }
     }
+    
+    private func speakBlockingGeorge(_ text: String) async throws {
+
+        try? AVAudioSession.sharedInstance().setActive(true)
+
+        // build request
+        let url = URL(string: "\(base)/\(cfg.elevenLabsVoiceId)")!
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue(cfg.elevenLabsAPIKey, forHTTPHeaderField: "xi-api-key")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("audio/mpeg", forHTTPHeaderField: "Accept")   // MP3
+        let body: [String: Any] = [
+            "text": text,
+            "model_id": "eleven_turbo_v2_5",
+            "voice_settings": [
+                "stability": 0.6,
+                "similarity_boost": 0.8,
+                "style": 0.2,
+                "use_speaker_boost": true
+            ]
+        ]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw ElevenLabsError.invalidResponse
+        }
+
+        await playMP3(data)
+    }
+
+    @MainActor
+    private func playMP3(_ data: Data) async {
+        do {
+            mp3Player?.stop()
+            mp3Player = try AVAudioPlayer(data: data)
+            mp3Player?.delegate = self
+            mp3Player?.prepareToPlay()
+            isSpeaking = true
+            mp3Player?.play()
+        } catch {
+            print("George MP3 playback error: \(error) — fallback to system TTS.")
+            await fallbackSystemTTS(Self.cleanText(String(decoding: data, as: UTF8.self)))
+        }
+    }
+    
+    // MARK: - AVAudioPlayerDelegate
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        // Reset speaking state on main thread
+        Task { @MainActor in
+            if self.mp3Player === player { self.mp3Player = nil }
+            self.isSpeaking = false
+        }
+    }
+
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        Task { @MainActor in
+            if self.mp3Player === player { self.mp3Player = nil }
+            self.isSpeaking = false
+        }
+        if let error { print("George MP3 decode error: \(error)") }
+    }
+
+    
+
 }
+
+// MARK: - Error
+enum ElevenLabsError: Error {
+    case invalidResponse
+}
+

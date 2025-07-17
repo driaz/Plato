@@ -33,6 +33,10 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     var isUser: Bool { role == .user }
 }
 
+@available(*, deprecated, message: "Use ChatMessage instead.")
+typealias Message = ChatMessage
+
+
 /// Convenience helpers
 extension ChatMessage {
     static func user(_ text: String) -> ChatMessage {
