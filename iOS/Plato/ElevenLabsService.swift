@@ -21,6 +21,9 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     private var fallbackSynth: AVSpeechSynthesizer?
     
     private var mp3Player: AVAudioPlayer?
+    private var engine: AVAudioEngine?
+    private var playerNode: AVAudioPlayerNode?
+
     
     override init() {
         super.init()
@@ -60,14 +63,15 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     
     /// Stop streaming / playback immediately.
     func stopSpeaking() {
-        player?.stop()      // if you still have StreamingPlayer
-        player = nil
-        mp3Player?.stop()
-        mp3Player = nil
-        if let synth = fallbackSynth, synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
-        fallbackSynth = nil
-        isSpeaking = false
+        Task { @MainActor in
+            playerNode?.stop()
+            engine?.stop()
+            engine = nil
+            playerNode = nil
+            isSpeaking = false
+        }
     }
+
 
     
     var isConfigured: Bool { cfg.hasElevenLabs }
@@ -298,17 +302,31 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         }
     }
     
+    // MARK: - Blocking George playback (MP3)
     private func speakBlockingGeorge(_ text: String) async throws {
+        //------------------------------------------
+        // 1) Make sure we’re in a speaker-friendly
+        //    session category before we play.
+        //------------------------------------------
+        await MainActor.run {
+            let s = AVAudioSession.sharedInstance()
+            try? s.setCategory(.playAndRecord,
+                               mode: .voiceChat,
+                               options: [.defaultToSpeaker, .allowBluetooth])
+            try? s.setActive(true)
+            try? s.overrideOutputAudioPort(.speaker)
+        }
 
-        try? AVAudioSession.sharedInstance().setActive(true)
-
-        // build request
+        //------------------------------------------
+        // 2) Build ElevenLabs request (MP3).
+        //------------------------------------------
         let url = URL(string: "\(base)/\(cfg.elevenLabsVoiceId)")!
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue(cfg.elevenLabsAPIKey, forHTTPHeaderField: "xi-api-key")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("audio/mpeg", forHTTPHeaderField: "Accept")   // MP3
+        req.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
+
         let body: [String: Any] = [
             "text": text,
             "model_id": "eleven_turbo_v2_5",
@@ -321,28 +339,76 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         ]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
+        //------------------------------------------
+        // 3) Fetch audio data.
+        //------------------------------------------
         let (data, response) = try await URLSession.shared.data(for: req)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw ElevenLabsError.invalidResponse
         }
 
-        await playMP3(data)
+        //------------------------------------------
+        // 4) Play via AVAudioPlayer.
+        //------------------------------------------
+        try await playMP3(data)
     }
+
 
     @MainActor
     private func playMP3(_ data: Data) async {
-        do {
-            mp3Player?.stop()
-            mp3Player = try AVAudioPlayer(data: data)
-            mp3Player?.delegate = self
-            mp3Player?.prepareToPlay()
-            isSpeaking = true
-            mp3Player?.play()
-        } catch {
-            print("George MP3 playback error: \(error) — fallback to system TTS.")
-            await fallbackSystemTTS(Self.cleanText(String(decoding: data, as: UTF8.self)))
+        // Dispose old graph
+        engine?.stop()
+        engine = nil
+        playerNode = nil
+
+        // Build graph (+12 dB EQ)
+        let eng  = AVAudioEngine()
+        let node = AVAudioPlayerNode()
+        let eq   = AVAudioUnitEQ(numberOfBands: 1)
+        eq.globalGain = 12.0
+
+        eng.attach(node)
+        eng.attach(eq)
+        eng.connect(node, to: eq, format: nil)
+        eng.connect(eq,  to: eng.mainMixerNode, format: nil)
+        try? eng.start()
+
+        engine     = eng
+        playerNode = node
+
+        // Temp MP3 file
+        let tmpURL = FileManager.default
+            .temporaryDirectory
+            .appendingPathComponent("george-\(UUID().uuidString).mp3")
+        guard (try? data.write(to: tmpURL)) != nil,
+              let file = try? AVAudioFile(forReading: tmpURL) else {
+            print("George: temp-file or AVAudioFile failure"); return
         }
+
+        // --------- Playback with proper STT pause/resume ---------
+        // ----- PAUSE mic *always* -----
+        ContentView.sharedSpeechRecognizer?.stopRecording()
+        print("🎤 PAUSE STT")
+
+        print("🔊 node.play() — engine running:", eng.isRunning)
+        node.play()                                 // start engine clocks
+        await node.scheduleFile(file, at: nil)      // ⏳ suspend until finished
+        print("🟢 playback DONE")
+        try? FileManager.default.removeItem(at: tmpURL)
+
+        isSpeaking = false
+        eng.stop()
+        engine = nil
+        playerNode = nil
+
+        ContentView.sharedSpeechRecognizer?.startRecording()
+        print("🎤 RESUME STT")
     }
+
+
+
+
+
     
     // MARK: - AVAudioPlayerDelegate
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {

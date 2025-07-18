@@ -8,16 +8,19 @@
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var speechRecognizer = SpeechRecognizer()
-    @StateObject private var elevenLabsService = ElevenLabsService()
-    @StateObject private var philosophyService = PhilosophyService()
+    static weak var sharedSpeechRecognizer: SpeechRecognizer?
+    static var isAlwaysListeningGlobal = false
     
     @State private var messages: [ChatMessage] = []
     @State private var inputText = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var showingError = false
-    @State private var isAlwaysListening = true
+    
+    @State private var isAlwaysListening = true {
+        didSet { ContentView.isAlwaysListeningGlobal = isAlwaysListening }
+    }
+    
     @State private var hasShownWelcome = false
     
     // Streaming accumulation for current assistant turn
@@ -25,6 +28,10 @@ struct ContentView: View {
     
     @State private var lastAssistantUtterance: String = ""
     @State private var echoGuardUntil: Date = .distantPast
+    
+    @StateObject private var speechRecognizer = SpeechRecognizer()
+    @StateObject private var elevenLabsService = ElevenLabsService()
+    @StateObject private var philosophyService = PhilosophyService()
 
     
     
@@ -115,53 +122,66 @@ struct ContentView: View {
             .navigationTitle("🏛️ Plato")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
-                AudioSessionManager.shared.configureForDuplex() // ensure duplex once UI appears
-                speechRecognizer.requestPermission()
-                
-                // Auto-upload callback from STT
+                //--------------------------------------------------
+                // 1.  Register global reference (needed by TTS)
+                //--------------------------------------------------
+                ContentView.sharedSpeechRecognizer = speechRecognizer
 
+                //--------------------------------------------------
+                // 2.  Configure duplex session once UI is visible
+                //--------------------------------------------------
+                AudioSessionManager.shared.configureForDuplex()
+
+                //--------------------------------------------------
+                // 3.  Request permissions (do it only once)
+                //--------------------------------------------------
+                speechRecognizer.requestPermission()
+
+                //--------------------------------------------------
+                // 4.  Auto-upload callback
+                //--------------------------------------------------
                 speechRecognizer.onAutoUpload = { transcript in
                     let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmed.isEmpty else { return }
-                    
-                    // Time guard: ignore transcripts that arrive before the echo guard window expires.
-                    if Date() < echoGuardUntil {
+
+                    // Echo-guard: ignore early or AI-echo transcripts
+                    if Date() < echoGuardUntil {           // time guard
                         print("🛡️ Dropping transcript (within echo guard window): \(trimmed)")
                         return
                     }
-                    
-                    // Content guard: ignore if transcript is mostly the AI's last utterance.
-                    if isEcho(transcript: trimmed, of: lastAssistantUtterance) {
+                    if isEcho(transcript: trimmed, of: lastAssistantUtterance) { // content guard
                         print("🛡️ Dropping AI echo transcript: \(trimmed)")
                         return
                     }
-                    
+
                     askQuestion(trimmed)
+                    inputText = ""        // reset draft so next STT turn starts fresh
+                    speechRecognizer.transcript = ""   // clear subtitle line (optional)
                 }
 
-                
-                
-                // Interruption callback
+                //--------------------------------------------------
+                // 5.  Interruption callback
+                //--------------------------------------------------
                 speechRecognizer.onInterruption = {
-                    print("🚨 User interrupted AI - stopping voice playback")
+                    print("🚨 User interrupted AI – stopping voice playback")
                     elevenLabsService.stopSpeaking()
                 }
-                
-                hasShownWelcome = true
-                
-//                #if DEBUG
-//                Task {
-//                    await elevenLabsService.debugProbeStreamFormat(
-//                        sampleText: "George voice format probe.",
-//                        accept: "application/octet-stream",
-//                        outputFormat: "pcm_22050"
-//                    )
-//                }
-//                #endif
 
-                
-                
+                hasShownWelcome = true
+
+                /* Optional debug probe
+                #if DEBUG
+                Task {
+                    await elevenLabsService.debugProbeStreamFormat(
+                        sampleText: "George voice format probe.",
+                        accept: "application/octet-stream",
+                        outputFormat: "pcm_22050"
+                    )
+                }
+                #endif
+                */
             }
+
             
             // Mic permission → start always-listening
             .onChange(of: speechRecognizer.isAuthorized, initial: false) { _, isAuth in
@@ -177,31 +197,30 @@ struct ContentView: View {
             }
             
             // Live transcript → show in text field (ignore while AI speaks)
-            .onChange(of: speechRecognizer.transcript, initial: false) { _, text in
+            .onChange(of: speechRecognizer.transcript, initial: false) { oldText, newText in
+                // Ignore updates while George is talking
                 guard !elevenLabsService.isSpeaking else { return }
-                if !text.isEmpty { inputText = text }
-            }
-            
-            // AI speaking → stop / restart STT (kills echo loop)
-            .onChange(of: elevenLabsService.isSpeaking) { _, speaking in
-                guard isAlwaysListening else { return }
-                
-                if speaking {
-                    print("🔇 AI speaking — stopping recognition to avoid echo.")
-                    speechRecognizer.stopRecording()
-                } else {
-                    // Mark echo guard window
-                    let delay = ConfigManager.shared.speechPostPlaybackGrace
-                    echoGuardUntil = Date().addingTimeInterval(delay + 0.4) // extra guard beyond restart
-                    print("🟢 AI finished — restarting recognition in \(delay)s (echo guard active).")
-                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                        guard isAlwaysListening else { return }
-                        inputText = ""
-                        speechRecognizer.startRecording()
-                    }
+
+                // 🔍 Debug – see each partial result as it arrives
+                print("📥 partial:", newText)
+
+                // Mirror the live transcript into the draft field
+                if !newText.isEmpty {
+                    inputText = newText
                 }
             }
 
+            
+            .onChange(of: elevenLabsService.isSpeaking) {
+                guard isAlwaysListening else { return }
+
+                if elevenLabsService.isSpeaking {
+                    // TTS just started → pause mic
+                    speechRecognizer.stopRecording()
+                }
+            }
+
+            
             .alert("Error", isPresented: $showingError) {
                 Button("OK") { }
             } message: {

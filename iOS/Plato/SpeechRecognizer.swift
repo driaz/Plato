@@ -4,7 +4,6 @@
 //
 //  Created by Daniel Riaz on 7/13/25.
 // /Users/danielriaz/Projects/Plato/iOS/Plato/SpeechRecognizer.swift
-
 //  Phase 1 latency refactor: short silence, stability early trigger, shared audio session.
 //
 
@@ -129,12 +128,18 @@ class SpeechRecognizer: ObservableObject {
         recognitionTask?.cancel()
         recognitionTask = nil
         
-        // Shared audio session (no per-turn category flips)
-        AudioSessionManager.shared.configureForDuplex()
+        // Shared audio session (speaker + mic) *but* STT needs .measurement mode.
+        AudioSessionManager.shared.configureForDuplex()     // sets playAndRecord / voiceChat
+
         do {
-            try AVAudioSession.sharedInstance().setActive(true) // safe re-activate
+            let s = AVAudioSession.sharedInstance()
+            // 👉 override just the mode for speech-to-text
+            try s.setCategory(.playAndRecord,
+                              mode: .measurement,
+                              options: [.defaultToSpeaker, .allowBluetooth])
+            try s.setActive(true)
         } catch {
-            print("⚠️ Failed to activate audio session: \(error)")
+            print("⚠️ Failed to configure STT session:", error)
         }
         
         // New request
