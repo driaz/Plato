@@ -350,7 +350,7 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         //------------------------------------------
         // 4) Play via AVAudioPlayer.
         //------------------------------------------
-        try await playMP3(data)
+        await playMP3(data)
     }
 
 

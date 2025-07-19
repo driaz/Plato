@@ -90,7 +90,7 @@ final class PhilosophyService: ObservableObject {
             stream: true
         )
         
-        var req = try makeURLRequest(with: payload)
+        let req = try makeURLRequest(with: payload)
         
         // Network bytes stream
         let (bytes, response) = try await URLSession.shared.bytes(for: req)
@@ -129,7 +129,7 @@ final class PhilosophyService: ObservableObject {
             history: conversationHistory,
             stream: false
         )
-        var req = try makeURLRequest(with: payload)
+        let req = try makeURLRequest(with: payload)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response)
         return try decodeBlockingContent(data: data)

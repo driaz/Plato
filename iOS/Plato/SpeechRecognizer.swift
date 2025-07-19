@@ -57,28 +57,41 @@ class SpeechRecognizer: ObservableObject {
     
     // MARK: Permissions
     
+    /// Ask for mic **and** Speech-Recognition permission, updating `isAuthorized`.
     func requestPermission() {
-        AVAudioSession.sharedInstance().requestRecordPermission { [weak self] micGranted in
-            guard let self else { return }
-            if micGranted {
-                SFSpeechRecognizer.requestAuthorization { authStatus in
-                    DispatchQueue.main.async {
-                        self.isAuthorized = (authStatus == .authorized)
-                        if self.isAuthorized {
-                            print("✅ Speech recognition authorized")
-                        } else {
-                            print("❌ Speech recognition not authorized: \(authStatus.rawValue)")
-                        }
+        Task { @MainActor in
+            // ------- Microphone permission -------
+            let micGranted: Bool
+            if #available(iOS 17.0, *) {
+                micGranted = await AVAudioApplication.requestRecordPermission()
+            } else {
+                micGranted = await withCheckedContinuation { cont in
+                    AVAudioSession.sharedInstance().requestRecordPermission { granted in
+                        cont.resume(returning: granted)
                     }
                 }
-            } else {
-                DispatchQueue.main.async {
-                    self.isAuthorized = false
-                    print("❌ Microphone permission denied")
+            }
+
+            guard micGranted else {
+                self.isAuthorized = false
+                print("❌ Microphone permission denied")
+                return
+            }
+
+            // ------- Speech-rec permission -------
+            let speechAuth = await withCheckedContinuation { cont in
+                SFSpeechRecognizer.requestAuthorization { status in
+                    cont.resume(returning: status)
                 }
             }
+
+            self.isAuthorized = (speechAuth == .authorized)
+            print(self.isAuthorized ? "✅ Speech recognition authorized"
+                                    : "❌ Speech recognition not authorized: \(speechAuth.rawValue)")
         }
     }
+
+
     
     // MARK: Always Listening
     
@@ -148,16 +161,14 @@ class SpeechRecognizer: ObservableObject {
         
         // STT config
         req.shouldReportPartialResults = true
-        req.requiresOnDeviceRecognition = false
+        req.requiresOnDeviceRecognition = true
         req.taskHint = .dictation
         
         if #available(iOS 16.0, *) {
             req.addsPunctuation = true
             req.contextualStrings = contextualHints
         }
-        if #available(iOS 17.0, *) {
-            req.interactionIdentifier = "philosophical_conversation"
-        }
+
         
         // Recognize
         llmTriggered = false
@@ -222,7 +233,7 @@ class SpeechRecognizer: ObservableObject {
         
         lastTranscriptUpdate = Date()
         hasContent = !corrected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        resetSilenceTimer()  // trailing-silence trigger
+       autoUploadTimer()  // trailing-silence trigger
         
         // EARLY TRIGGER when partial is stable & not paused
         if !result.isFinal, hasContent, !llmTriggered, !isPaused {
@@ -245,11 +256,13 @@ class SpeechRecognizer: ObservableObject {
     
     // MARK: Auto-upload
     
-    private func resetSilenceTimer() {
+    private func autoUploadTimer() {
         silenceTimer?.invalidate()
         guard hasContent, isRecording, !isPaused else { return }
         silenceTimer = Timer.scheduledTimer(withTimeInterval: silenceThreshold, repeats: false) { [weak self] _ in
-            self?.fireTurn(text: self?.transcript ?? "")
+            Task {@MainActor in
+                self?.fireTurn(text: self?.transcript ?? "")
+            }
         }
     }
     
@@ -281,13 +294,26 @@ class SpeechRecognizer: ObservableObject {
     // MARK: Contextual hints (improve accuracy)
     private var contextualHints: [String] {
         [
-            "Marcus Aurelius", "Epictetus", "Seneca", "Plato",
+            // Core philosophers
+            "Marcus Aurelius", "Epictetus", "Seneca",
+
+            // ←– add all common Plato variants
+            "Plato",           // canonical
+            "Play-Doh",        // homophone people sometimes say
+            "Playdoh",         // no hyphen
+            "Playto",          // phonetic mis-spell
+            "Plato's",         // possessive form
+
+            // Philosophical vocabulary
             "Stoic", "Stoicism", "philosophy", "virtue", "resilience",
             "mindfulness", "temperance", "justice", "courage", "prudence",
             "inner peace", "present moment", "breathe deeply",
+
+            // Common question stems
             "How do I", "What would", "How can I", "Guide me", "Teach me"
         ]
     }
+
     
     // MARK: - Manual upload (manual mode UI)
     func manualUpload() {
