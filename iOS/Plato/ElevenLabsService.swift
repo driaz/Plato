@@ -34,13 +34,28 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     /// Speak text using streaming ElevenLabs TTS when available; fallback to system TTS otherwise.
     /// Speak text (Phase 1 latency test mode: force Apple system TTS; skip ElevenLabs network).
     func speak(_ raw: String) async {
+        print("🎭 ElevenLabs speak() called with text: \(raw.prefix(50))...")
+        
+        // Ensure speaking state is set on main thread
+        await MainActor.run {
+            self.isSpeaking = true
+            print("🎭 Set isSpeaking = true")
+        }
+        
         stopSpeaking()
         let text = Self.cleanText(raw)
+        
+        print("🎭 ElevenLabs speak() called with text: \(text.prefix(50))...")
+        print("🎭 Streaming enabled: \(cfg.useStreamingTTS)")
+        print("🎭 Has API key: \(cfg.hasElevenLabs)")
+
 
         // if streaming is OFF (current state), do blocking George
         if !cfg.useStreamingTTS {
+            print("🎭 Using blocking ElevenLabs mode...")
             do {
                 try await speakBlockingGeorge(text)
+                print("🎭 Blocking ElevenLabs completed successfully")
             } catch {
                 print("⚠️ George blocking error: \(error) — fallback system TTS.")
                 await fallbackSystemTTS(text)
@@ -49,14 +64,21 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         }
 
         // streaming path (we’ll finish this later)
+        print("🎭 Using streaming ElevenLabs mode...")
         isGenerating = true
         do {
             try await streamPCM(text: text)   // will be replaced w/ MP3 stream decode soon
+            print("🎭 Streaming ElevenLabs completed successfully")
         } catch {
             print("⚠️ George streaming error: \(error) — fallback system TTS.")
             await fallbackSystemTTS(text)
         }
         isGenerating = false
+        
+        await MainActor.run {
+            self.isSpeaking = false
+            print("🎭 Set isSpeaking = false")
+        }
     }
 
 

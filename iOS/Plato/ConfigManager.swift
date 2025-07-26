@@ -121,8 +121,10 @@ struct ConfigManager {
         bool(ConfigKeys.useStreamingLLM) ?? true
     }
     
+    // 🔧 QUICK FIX: Force blocking TTS mode
     var useStreamingTTS: Bool {
-        bool(ConfigKeys.useStreamingTTS) ?? true
+        return false  // Force blocking mode for now - streaming has audio issues
+        // Original: bool(ConfigKeys.useStreamingTTS) ?? true
     }
     
     // MARK: - LLM Controls
