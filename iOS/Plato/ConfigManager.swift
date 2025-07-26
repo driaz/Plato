@@ -2,10 +2,7 @@
 //  ConfigManager.swift
 //  Plato
 //
-//  Created by Daniel Riaz on 7/13/25.
-// /Users/danielriaz/Projects/Plato/iOS/Plato/ConfigManager.swift
-
-//  Updated for Phase 1 latency tunables.
+//  Cleaned version - removed streaming TTS references for now
 //
 
 import Foundation
@@ -14,21 +11,22 @@ struct ConfigKeys {
     static let openAIAPIKey              = "OpenAI_API_Key"
     static let elevenLabsAPIKey          = "ElevenLabs_API_Key"
     
-    // Tunables
+    // Speech Recognition Tunables
     static let speechSilenceThreshold    = "Speech_SilenceThresholdSeconds"
     static let speechStabilityWindow     = "Speech_StabilityWindowSeconds"
     static let speechPostPlaybackGrace   = "Speech_PostPlaybackGraceSeconds"
     static let speechVADEnergyFloorDb    = "Speech_VADEnergyFloorDb"
     
+    // Streaming Configuration
     static let useStreamingLLM           = "Use_Streaming_LLM"
     static let useStreamingTTS           = "Use_Streaming_TTS"
     
-    // LLM
+    // LLM Configuration
     static let llmModel                  = "LLM_Model"
     static let llmTemperature            = "LLM_Temperature"
     static let llmMaxTokens              = "LLM_MaxTokens"
     
-    // ElevenLabs
+    // ElevenLabs Configuration
     static let elevenLabsVoiceId         = "ElevenLabs_VoiceId"
     static let elevenLabsLatencyMode     = "ElevenLabs_LatencyMode"
 }
@@ -48,7 +46,7 @@ struct ConfigManager {
         }
     }
     
-    // MARK: - Helpers
+    // MARK: - Helper Methods
     
     private func string(_ key: String) -> String? {
         if let s = config[key] as? String, !s.isEmpty { return s }
@@ -97,7 +95,7 @@ struct ConfigManager {
         return ""
     }
     
-    // MARK: - Tunables (with defaults)
+    // MARK: - Speech Recognition Tunables
     
     var speechSilenceThreshold: TimeInterval {
         number(ConfigKeys.speechSilenceThreshold) ?? 0.6
@@ -111,23 +109,23 @@ struct ConfigManager {
         number(ConfigKeys.speechPostPlaybackGrace) ?? 0.3
     }
     
-    /// If provided, energy floor in dBFS above which we consider speech when VAD enabled.
+    /// Energy floor in dBFS above which we consider speech when VAD enabled.
     var vadEnergyFloorDb: Float? {
         guard let d = number(ConfigKeys.speechVADEnergyFloorDb) else { return nil }
         return Float(d)
     }
     
+    // MARK: - LLM Configuration
+    
+    // MARK: - Streaming Configuration
+    
     var useStreamingLLM: Bool {
         bool(ConfigKeys.useStreamingLLM) ?? true
     }
     
-    // 🔧 QUICK FIX: Force blocking TTS mode
     var useStreamingTTS: Bool {
-        return false  // Force blocking mode for now - streaming has audio issues
-        // Original: bool(ConfigKeys.useStreamingTTS) ?? true
+        bool(ConfigKeys.useStreamingTTS) ?? true
     }
-    
-    // MARK: - LLM Controls
     
     var llmModel: String {
         string(ConfigKeys.llmModel) ?? "gpt-4o-mini"
@@ -141,18 +139,18 @@ struct ConfigManager {
         Int(number(ConfigKeys.llmMaxTokens) ?? 150)
     }
     
-    // MARK: - ElevenLabs Controls
+    // MARK: - ElevenLabs Configuration
     
     var elevenLabsVoiceId: String {
         string(ConfigKeys.elevenLabsVoiceId) ?? "JBFqnCBsd6RMkjVDRZzb"
     }
     
-    /// 0=default, 1=fastest, 2=balanced (mapping to ElevenLabs optimize_streaming_latency param)
+    /// ElevenLabs streaming latency optimization: 0=default, 1=fastest, 2=balanced
     var elevenLabsLatencyMode: Int {
         Int(number(ConfigKeys.elevenLabsLatencyMode) ?? 2)
     }
     
-    // MARK: - Quick Flags
+    // MARK: - Status Flags
     
     var isConfigured: Bool { !openAIAPIKey.isEmpty }
     var hasElevenLabs: Bool { !elevenLabsAPIKey.isEmpty }
