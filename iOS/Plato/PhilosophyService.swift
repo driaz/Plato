@@ -3,6 +3,7 @@
 //  Plato
 //
 //  Phase 1: Streaming Chat Completions + Unified ChatMessage model
+//  Phase 2: Chunked TTS - Added sentence detection
 //
 
 import Foundation
@@ -74,12 +75,14 @@ final class PhilosophyService: ObservableObject {
     
     // MARK: - Public API
     
-    /// Streaming variant. Calls `onDelta` on main thread with text fragments.
+    /// Streaming variant with sentence detection.
+    /// Calls `onDelta` with text fragments and `onSentence` when complete sentences are detected.
     /// Returns the final full response string when stream completes.
     func streamResponse(
         question: String,
         history: [ChatMessage],
-        onDelta: @escaping @MainActor (String) -> Void
+        onDelta: @escaping @MainActor (String) -> Void,
+        onSentence: @escaping @MainActor (String) -> Void = { _ in }
     ) async throws -> String {
         guard !apiKey.isEmpty else { throw PhilosophyError.missingAPIKey }
         
@@ -97,6 +100,9 @@ final class PhilosophyService: ObservableObject {
         try validate(response: response)
         
         var full = ""
+        var sentenceBuffer = ""
+        var lastSentenceEnd = 0
+        
         for try await line in bytes.lines {
             guard line.hasPrefix("data:") else { continue }
             let raw = line.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -106,14 +112,43 @@ final class PhilosophyService: ObservableObject {
                 let chunk = try JSONDecoder().decode(OpenAIStreamChunk.self, from: data)
                 if let delta = chunk.choices.first?.delta?.content, !delta.isEmpty {
                     full += delta
+                    sentenceBuffer += delta
                     await onDelta(delta)
+                    
+                    // Check for complete sentences
+                    if let completeSentence = detectCompleteSentence(in: sentenceBuffer) {
+                        await onSentence(completeSentence)
+                        // Remove the detected sentence from buffer more safely
+                        sentenceBuffer = String(sentenceBuffer.dropFirst(completeSentence.count))
+                        sentenceBuffer = sentenceBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
                 }
             } catch {
                 // ignore malformed partials; continue
             }
         }
         
+        // Handle any remaining text as final sentence
+        let remaining = sentenceBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !remaining.isEmpty && remaining.split(separator: " ").count >= 2 {
+            await onSentence(remaining)
+        }
+        
         return full.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    /// Backward compatibility - calls new method without sentence callback
+    func streamResponse(
+        question: String,
+        history: [ChatMessage],
+        onDelta: @escaping @MainActor (String) -> Void
+    ) async throws -> String {
+        try await streamResponse(
+            question: question,
+            history: history,
+            onDelta: onDelta,
+            onSentence: { _ in }
+        )
     }
     
     /// Legacy blocking call (kept for fallback / debugging)
@@ -133,6 +168,75 @@ final class PhilosophyService: ObservableObject {
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response)
         return try decodeBlockingContent(data: data)
+    }
+    
+    // MARK: - Sentence Detection
+    
+    /// Detects complete sentences in the buffer.
+    /// Returns the complete sentence if found, nil otherwise.
+    private func detectCompleteSentence(in buffer: String) -> String? {
+        // Don't process very short buffers
+        guard buffer.count > 10 else { return nil }
+        
+        // Look for sentence-ending punctuation
+        let sentenceEnders: [(String, Int)] = [
+            (".", 1), ("!", 1), ("?", 1),
+            (":", 1), ("...", 3), (".\"", 2),
+            ("!\"", 2), ("?\"", 2)
+        ]
+        
+        for (ender, enderLength) in sentenceEnders {
+            if let range = buffer.range(of: ender, options: .backwards) {
+                // Check what comes after the punctuation
+                let afterPunct = String(buffer[range.upperBound...])
+                
+                // Valid sentence if followed by space, newline, or end of buffer
+                let isValidEnd = afterPunct.isEmpty ||
+                                afterPunct.hasPrefix(" ") ||
+                                afterPunct.hasPrefix("\n") ||
+                                afterPunct.allSatisfy { $0.isWhitespace }
+                
+                if isValidEnd {
+                    var sentence = String(buffer[..<range.upperBound])
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    
+                    // Clean up markdown and formatting
+                    sentence = cleanForTTS(sentence)
+                    
+                    // Minimum viable sentence (3+ words)
+                    let wordCount = sentence.split(separator: " ").count
+                    if wordCount >= 3 {
+                        return sentence
+                    }
+                }
+            }
+        }
+        
+        // Check for very long buffer without punctuation (fallback)
+        let words = buffer.split(separator: " ")
+        if words.count > 20 {
+            // Find a natural break point around 15 words
+            let breakPoint = min(15, words.count - 1)
+            let partial = words[0..<breakPoint].joined(separator: " ")
+            return cleanForTTS(partial)
+        }
+        
+        return nil
+    }
+    
+    /// Cleans text for TTS (removes markdown, excessive formatting)
+    private func cleanForTTS(_ text: String) -> String {
+        var cleaned = text
+        // Remove markdown
+        cleaned = cleaned.replacingOccurrences(of: "**", with: "")
+        cleaned = cleaned.replacingOccurrences(of: "*", with: "")
+        cleaned = cleaned.replacingOccurrences(of: "_", with: "")
+        cleaned = cleaned.replacingOccurrences(of: "`", with: "")
+        cleaned = cleaned.replacingOccurrences(of: "#", with: "")
+        // Clean up whitespace
+        cleaned = cleaned.replacingOccurrences(of: "  ", with: " ")
+        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned
     }
     
     // MARK: - Request Builders
@@ -206,4 +310,3 @@ final class PhilosophyService: ObservableObject {
         }
     }
 }
-
