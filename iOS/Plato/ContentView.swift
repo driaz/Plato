@@ -11,6 +11,8 @@ import SwiftUI
 struct ContentView: View {
     static weak var sharedSpeechRecognizer: SpeechRecognizer?
     static var isAlwaysListeningGlobal = false
+    static weak var sharedElevenLabs: ElevenLabsService?
+
     
     @State private var messages: [ChatMessage] = []
     @State private var inputText = ""
@@ -133,6 +135,7 @@ struct ContentView: View {
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
                 ContentView.sharedSpeechRecognizer = speechRecognizer
+                ContentView.sharedElevenLabs = elevenLabsService  
                 AudioSessionManager.shared.configureForDuplex()
                 speechRecognizer.requestPermission()
                 
@@ -196,16 +199,36 @@ struct ContentView: View {
 //            }
             .onChange(of: speechRecognizer.transcript, initial: false) { oldText, newText in
                 guard !elevenLabsService.isSpeaking else { return }
-                print("📥 partial:", newText)
+//                print("📥 partial:", newText)
                 if !newText.isEmpty {
                     inputText = newText
                 }
             }
+//            .onChange(of: elevenLabsService.isSpeaking) { _, isSpeaking in
+//                guard isAlwaysListening else { return }
+//                if isSpeaking {
+//                    print("🛑 TTS started - stopping speech recognition immediately")
+//                    speechRecognizer.stopRecording()
+//                    speechRecognizer.pauseListening()  // Prevent any restarts
+//                } else {
+//                    print("✅ TTS finished - can resume speech recognition")
+//                    speechRecognizer.resumeListening()
+//                    
+//                    // Resume after a short delay to avoid catching echo
+//                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+//                        if isAlwaysListening && !speechRecognizer.isRecording && !elevenLabsService.isSpeaking {
+//                            speechRecognizer.startRecording()
+//                        }
+//                    }
+//                }
+//            }
             .onChange(of: elevenLabsService.isSpeaking) { _, isSpeaking in
                 guard isAlwaysListening else { return }
                 if isSpeaking {
+                    print("🛑 TTS started - stopping speech recognition immediately")
                     speechRecognizer.stopRecording()
                 }
+                // Let notifyTTSComplete() handle the resume logic
             }
             .overlay(alignment: .bottom) {
                 #if DEBUG
@@ -677,3 +700,115 @@ struct MessageBubble: View {
 #Preview {
     ContentView()
 }
+
+// Add this debug version of askQuestion to your ContentView
+
+extension ContentView {
+    
+    /// Debug version of askQuestion with PCM logging
+    private func askQuestionDebug(_ question: String) {
+        print("\n🔍 ===== askQuestion DEBUG START =====")
+        print("📝 Question: \(question)")
+        print("🔧 PCM Config:")
+        print("   - useStreamingTTS: \(ConfigManager.shared.useStreamingTTS)")
+        print("   - hasElevenLabs: \(ConfigManager.shared.hasElevenLabs)")
+        
+        let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty && !isLoading else { return }
+        
+        // Stop any ongoing TTS
+        stopAllTTS()
+        
+        // capture history BEFORE adding assistant placeholder
+        let priorHistory = messages
+        
+        // append user message
+        let userMsg = ChatMessage.user(trimmed)
+        messages.append(userMsg)
+        inputText = ""
+        
+        // manual mode stop if needed
+        if !isAlwaysListening && speechRecognizer.isRecording {
+            speechRecognizer.stopRecording()
+        }
+        
+        isLoading = true
+        speechRecognizer.stopRecording()
+        streamingBuffer = ""
+        
+        // placeholder for assistant
+        let assistantID = UUID()
+        messages.append(ChatMessage(id: assistantID, role: .assistant, text: ""))
+        
+        Task {
+            do {
+                print("🤖 Getting philosophy response...")
+                let full = try await philosophyService.streamResponse(
+                    question: trimmed,
+                    history: priorHistory + [userMsg],
+                    onDelta: { delta in
+                        streamingBuffer += delta
+                        if let idx = messages.firstIndex(where: { $0.id == assistantID }) {
+                            messages[idx].text = streamingBuffer
+                        }
+                    },
+                    onSentence: { _ in
+                        // Intentionally empty - we're not using chunked TTS
+                    }
+                )
+                
+                print("✅ Got response: \(full.prefix(50))...")
+                
+                // finalize assistant turn
+                if let idx = messages.firstIndex(where: { $0.id == assistantID }) {
+                    messages[idx].text = full
+                }
+                isLoading = false
+                
+                lastAssistantUtterance = normalizeForEcho(full)
+                
+                // Speak the full response at once
+                print("🎤 Starting TTS...")
+                print("   - Using \(ConfigManager.shared.useStreamingTTS ? "PCM" : "MP3") mode")
+                
+                let ttsStart = Date()
+                await elevenLabsService.speak(full)
+                let ttsDuration = Date().timeIntervalSince(ttsStart) * 1000
+                
+                print("✅ TTS completed in \(Int(ttsDuration))ms")
+                print("🔍 ===== askQuestion DEBUG END =====\n")
+                
+            } catch {
+                print("❌ Error in askQuestion: \(error)")
+                let errText = "I apologize—trouble connecting to my wisdom. (\(error.localizedDescription))"
+                if let idx = messages.firstIndex(where: { $0.id == assistantID }) {
+                    messages[idx].text = errText
+                }
+                isLoading = false
+                errorMessage = error.localizedDescription
+                showingError = true
+            }
+        }
+    }
+}
+
+// Also add this test button to your debug overlay
+//struct PCMProductionTestButton: View {
+//    let parentView: ContentView
+//    
+//    var body: some View {
+//        Button(action: {
+//            // Force enable PCM
+////            ConfigManager.shared.useStreamingTTS = true
+//            UserDefaults.standard.synchronize()
+//            
+//            // Test with a simple question
+//            parentView.askQuestionDebug("What is wisdom?")
+//        }) {
+//            Label("Test Production PCM", systemImage: "play.circle")
+//                .font(.caption)
+//        }
+//        .buttonStyle(.borderedProminent)
+//        .controlSize(.small)
+//    }
+//}

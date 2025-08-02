@@ -2,8 +2,7 @@
 //  SpeechRecognizer.swift
 //  Plato
 //
-//  Created by Daniel Riaz on 7/13/25.
-//  Updated to handle "No speech detected" errors in always-listening mode
+//  Updated to prevent auto-restart during TTS playback
 //
 
 import Foundation
@@ -18,10 +17,9 @@ class SpeechRecognizer: ObservableObject {
     @Published var isRecording: Bool = false
     @Published var isAuthorized: Bool = false
     @Published var isProcessing: Bool = false
-    @Published var isMonitoringForInterruption: Bool = false   // placeholder; off in Phase 1
+    @Published var isMonitoringForInterruption: Bool = false
     
     // Core
-//    private var audioEngine = AVAudioEngine()
     private var speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
@@ -36,11 +34,13 @@ class SpeechRecognizer: ObservableObject {
     private var silenceTimer: Timer?
     private var lastTranscriptUpdate = Date()
     private var restartTimer: Timer?
+    private var lastTTSEndTime: Date = .distantPast
+
     
     // Config
     private let cfg = ConfigManager.shared
-    private var silenceThreshold: TimeInterval { cfg.speechSilenceThreshold }        // default 0.6
-    private var stabilityWindow: TimeInterval { cfg.speechStabilityWindow }          // default 0.3
+    private var silenceThreshold: TimeInterval { cfg.speechSilenceThreshold }
+    private var stabilityWindow: TimeInterval { cfg.speechStabilityWindow }
     
     // Early trigger tracking
     private var lastPartialText = ""
@@ -51,6 +51,12 @@ class SpeechRecognizer: ObservableObject {
     var onAutoUpload: ((String) -> Void)?
     var onInterruption: (() -> Void)?
     
+    // IMPORTANT: Add reference to check TTS state
+    private weak var elevenLabsService: ElevenLabsService? {
+        // Simply return the static reference from ContentView
+        return ContentView.sharedElevenLabs
+    }
+    
     init() {
         speechRecognizer?.defaultTaskHint = .dictation
         requestPermission()
@@ -58,7 +64,6 @@ class SpeechRecognizer: ObservableObject {
     
     // MARK: Permissions
     
-    /// Ask for mic **and** Speech-Recognition permission, updating `isAuthorized`.
     func requestPermission() {
         Task { @MainActor in
             // ------- Microphone permission -------
@@ -112,7 +117,6 @@ class SpeechRecognizer: ObservableObject {
         stopRecording()
     }
     
-    // Temporarily pause auto-upload (during AI speech); engine kept alive.
     func pauseListening(aiResponse _: String = "") {
         guard isAlwaysListening else { return }
         isPaused = true
@@ -227,7 +231,6 @@ class SpeechRecognizer: ObservableObject {
         transcript = ""
         
         // IMPORTANT: Give the audio session time to release
-        // This prevents conflicts when TTS starts immediately after
         Task {
             try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
         }
@@ -237,12 +240,12 @@ class SpeechRecognizer: ObservableObject {
     
     private func handleRecognition(result: SFSpeechRecognitionResult) {
         let transcription = result.bestTranscription.formattedString
-        let corrected = correctCommonMistakes(transcription) // keep corrections for now
+        let corrected = correctCommonMistakes(transcription)
         transcript = corrected
         
         lastTranscriptUpdate = Date()
         hasContent = !corrected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        autoUploadTimer()  // trailing-silence trigger
+        autoUploadTimer()
         
         // EARLY TRIGGER when partial is stable & not paused
         if !result.isFinal, hasContent, !llmTriggered, !isPaused {
@@ -269,10 +272,10 @@ class SpeechRecognizer: ObservableObject {
         // Check if it's a "No speech detected" error
         let nsError = error as NSError
         if nsError.domain == "kAFAssistantErrorDomain" && nsError.code == 1110 {
-            print("🔇 No speech detected - will restart if in always-listening mode")
+            print("🔇 No speech detected - checking if we should restart")
             stopRecording()
             
-            // If we're in always-listening mode and not paused, restart after a delay
+            // CRITICAL FIX: Check if TTS is speaking before scheduling restart
             if isAlwaysListening && !isPaused {
                 restartTimer?.invalidate()
                 restartTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] _ in
@@ -280,7 +283,33 @@ class SpeechRecognizer: ObservableObject {
                         guard let self = self,
                               self.isAlwaysListening,
                               !self.isPaused,
-                              !self.isRecording else { return }
+                              !self.isRecording else {
+                            print("🚫 Restart cancelled - conditions not met")
+                            return
+                        }
+                        
+                        // CHECK TTS STATE BEFORE RESTARTING
+                        if let elevenLabs = ContentView.sharedElevenLabs {
+                            print("🔍 TTS Check - isSpeaking: \(elevenLabs.isSpeaking), isGenerating: \(elevenLabs.isGenerating)")
+                            
+                            if elevenLabs.isSpeaking || elevenLabs.isGenerating {
+                                print("🔇 Skipping restart - TTS is active")
+                                // Schedule another check later
+                                self.scheduleDelayedRestart()
+                                return
+                            }
+                        } else {
+                            print("⚠️ Could not get ElevenLabs reference!")
+                        }
+                        
+                        // Also check if we're within a grace period after TTS
+                        let timeSinceLastTTS = Date().timeIntervalSince(self.lastTTSEndTime)
+                        if timeSinceLastTTS < 2.0 {
+                            print("🔇 Skipping restart - within TTS grace period (\(Int(timeSinceLastTTS * 1000))ms)")
+                            self.scheduleDelayedRestart()
+                            return
+                        }
+                        
                         print("🔄 Restarting speech recognition after no speech detected")
                         self.startRecording()
                     }
@@ -292,6 +321,52 @@ class SpeechRecognizer: ObservableObject {
         }
     }
     
+    // MARK: Helper to get ElevenLabsService
+    
+    private func getElevenLabsService() -> ElevenLabsService? {
+        // Try multiple approaches to get the service
+        
+        // First, check if ContentView has a static reference
+        if let sharedService = ContentView.sharedElevenLabs {
+            return sharedService
+        }
+        
+        // If not, try to find it through the view hierarchy
+        // This is a bit hacky but works for SwiftUI apps
+        for window in UIApplication.shared.windows {
+            if let hostingController = window.rootViewController as? UIHostingController<ContentView> {
+                // We can't directly access the ContentView, but we can use a static property
+                return nil // Will rely on ContentView.sharedElevenLabs
+            }
+        }
+        
+        return nil
+    }
+    
+    // MARK: Delayed restart when TTS is active
+    
+    private func scheduleDelayedRestart() {
+        restartTimer?.invalidate()
+        restartTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self,
+                      self.isAlwaysListening,
+                      !self.isPaused,
+                      !self.isRecording else { return }
+                
+                // Check again if TTS is done
+                if let elevenLabs = ContentView.sharedElevenLabs,
+                   (elevenLabs.isSpeaking || elevenLabs.isGenerating) {
+                    print("🔇 Still speaking, scheduling another check")
+                    self.scheduleDelayedRestart()
+                    return
+                }
+                
+                print("🔄 TTS finished, restarting speech recognition")
+                self.startRecording()
+            }
+        }
+    }
     // MARK: Auto-upload
     
     private func autoUploadTimer() {
@@ -330,61 +405,53 @@ class SpeechRecognizer: ObservableObject {
         if clearTranscript { transcript = "" }
     }
     
-    // MARK: Contextual hints (improve accuracy)
+    // MARK: Contextual hints
     private var contextualHints: [String] {
         [
-            // Core philosophers
             "Marcus Aurelius", "Epictetus", "Seneca",
-
-            // ←– add all common Plato variants
-            "Plato",           // canonical
-            "Play-Doh",        // homophone people sometimes say
-            "Playdoh",         // no hyphen
-            "Playto",          // phonetic mis-spell
-            "Plato's",         // possessive form
-
-            // Philosophical vocabulary
+            "Plato", "Play-Doh", "Playdoh", "Playto", "Plato's",
             "Stoic", "Stoicism", "philosophy", "virtue", "resilience",
             "mindfulness", "temperance", "justice", "courage", "prudence",
             "inner peace", "present moment", "breathe deeply",
-
-            // Common question stems
             "How do I", "What would", "How can I", "Guide me", "Teach me"
         ]
     }
     
-    // MARK: - Manual upload (manual mode UI)
+    // MARK: - Manual upload
     func manualUpload() {
         if hasContent {
             fireTurn(text: transcript)
         }
     }
     
-    // MARK: - Placeholder interruption API (disabled Phase 1)
+    func notifyTTSComplete() {
+        lastTTSEndTime = Date()
+        print("📢 TTS completed, setting grace period")
+        
+        // Resume listening if it was paused
+        if isPaused {
+            resumeListening()
+        }
+        
+        // If we're in always-listening mode and not currently recording,
+        // schedule a restart after a brief delay
+        if isAlwaysListening && !isRecording && !isPaused {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                if self.isAlwaysListening && !self.isRecording && !self.isPaused {
+                    print("🎤 Resuming speech recognition after TTS")
+                    self.startRecording()
+                }
+            }
+        }
+    }
+    
+    // MARK: - Placeholder interruption API
     func startInterruptionMonitoring(aiResponse _: String = "") {}
     func stopInterruptionMonitoring() {}
     
-    // MARK: - Corrections (unchanged from your original, trimmed)
+    // MARK: - Corrections
     private func correctCommonMistakes(_ text: String) -> String {
-        // (Keep your full correction tables if desired; trimmed for brevity here)
         return text
     }
 }
 
-// Add these methods to SpeechRecognizer.swift
-
-//extension SpeechRecognizer {
-//    /// Stop the audio engine for TTS playback
-//    func stopEngineForPlayback() {
-//        if audioEngine.isRunning {
-//            audioEngine.stop()
-//            audioEngine.inputNode.removeTap(onBus: 0)
-//            print("🛑 Stopped speech engine for TTS playback")
-//        }
-//    }
-//    
-//    /// Check if audio engine is running
-//    var isEngineRunning: Bool {
-//        audioEngine.isRunning
-//    }
-//}

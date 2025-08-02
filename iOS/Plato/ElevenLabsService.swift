@@ -2,7 +2,7 @@
 //  ElevenLabsService.swift
 //  Plato
 //
-//  Updated with 24kHz PCM streaming support
+//  CLEANED VERSION - Removed legacy streaming players
 //
 
 import Foundation
@@ -15,21 +15,12 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     private let cfg = ConfigManager.shared
     private let base = "https://api.elevenlabs.io/v1/text-to-speech"
 
-    
     // Playback modes
     private var fallbackSynth: AVSpeechSynthesizer?
     private var mp3Player: AVAudioPlayer?
-    private var engine: AVAudioEngine?
-    private var playerNode: AVAudioPlayerNode?
-//    private var streamingPlayer: StreamingPlayer24k?
-    private var robustPlayer: RobustStreamingPlayer?
-
-    // PCM Streamer - will be initialized on first use
+    
+    // PCM Streamer - the ONLY streaming implementation we need
     private var pcmStreamer: PCMStreamingService?
-
-
-    // Streaming state
-    private var currentStreamTask: Task<Void, Never>?
     
     override init() {
         super.init()
@@ -39,38 +30,55 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     
     /// Speak text using PCM streaming when enabled, MP3 fallback otherwise
     func speak(_ raw: String) async {
-            stopSpeaking()
-            let text = Self.cleanText(raw)
-            
-            // Check if we should use PCM streaming
-            if cfg.useStreamingTTS && cfg.hasElevenLabs {
-                // Initialize PCM streamer on MainActor if needed
-                if pcmStreamer == nil {
-                    await MainActor.run {
-                        self.pcmStreamer = PCMStreamingService()
-                    }
-                }
-                
-                // Use PCM streaming for low latency
-                await pcmStreamer?.streamSpeech(text)
-                
-                // Update our state based on streamer state
+        // CRITICAL: Set isSpeaking IMMEDIATELY to prevent race conditions
+        await MainActor.run {
+            self.isSpeaking = true
+            print("🔊 TTS Starting - isSpeaking = true")
+        }
+        
+        stopSpeaking()
+        let text = Self.cleanText(raw)
+        
+        // Check if we should use PCM streaming
+        if cfg.useStreamingTTS && cfg.hasElevenLabs {
+            // Initialize PCM streamer on MainActor if needed
+            if pcmStreamer == nil {
                 await MainActor.run {
-                    if let streamer = self.pcmStreamer {
-                        self.isSpeaking = streamer.isSpeaking
-                        self.isGenerating = streamer.isGenerating
-                    }
-                }
-            } else {
-                // Fall back to MP3 mode
-                do {
-                    try await speakBlockingGeorge(text)
-                } catch {
-                    print("⚠️ George MP3 error: \(error) — fallback system TTS")
-                    await fallbackSystemTTS(text)
+                    self.pcmStreamer = PCMStreamingService()
                 }
             }
+            
+            // Use PCM streaming for low latency
+            await pcmStreamer?.streamSpeech(text)
+            
+            // IMPORTANT: Wait for streaming to actually complete
+            // The streamSpeech method should complete only when audio finishes
+            await MainActor.run {
+                self.isSpeaking = false
+                print("🔊 TTS Complete - isSpeaking = false (PCM streaming finished)")
+                
+                // Notify speech recognizer that TTS is done
+                ContentView.sharedSpeechRecognizer?.notifyTTSComplete()
+            }
+        } else {
+            // Fall back to MP3 mode
+            do {
+                try await speakBlockingGeorge(text)
+            } catch {
+                print("⚠️ George MP3 error: \(error) — fallback system TTS")
+                await fallbackSystemTTS(text)
+            }
+            
+            // MP3/System TTS completion
+            await MainActor.run {
+                self.isSpeaking = false
+                print("🔊 TTS Complete - isSpeaking = false")
+                
+                // Notify speech recognizer that TTS is done
+                ContentView.sharedSpeechRecognizer?.notifyTTSComplete()
+            }
         }
+    }
     
     func stopSpeaking() {
         // Stop PCM streaming
@@ -78,164 +86,23 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
             pcmStreamer?.stopSpeaking()
         }
         
-        // Cancel streaming
-        currentStreamTask?.cancel()
-        currentStreamTask = nil
-//        streamingPlayer?.stop()
-//        streamingPlayer = nil
-        
-        // Stop robust player - wrap in Task to call @MainActor method
-        Task { @MainActor in
-            robustPlayer?.stop()
-            robustPlayer = nil
-        }
-        
         // Stop MP3
         Task { @MainActor in
-            playerNode?.stop()
-            engine?.stop()
-            engine = nil
-            playerNode = nil
+            mp3Player?.stop()
+            mp3Player = nil
             isSpeaking = false
-            
-            // Release audio mode if we were playing
-            if AudioCoordinator.shared.currentMode == .textToSpeech {
-                AudioCoordinator.shared.releaseCurrentMode()
-            }
+            isGenerating = false
         }
         
         // Stop system TTS
         fallbackSynth?.stopSpeaking(at: .immediate)
     }
+    
     var isConfigured: Bool { cfg.hasElevenLabs }
-    
-    // MARK: - PCM Streaming Implementation
-    
-    private func speakStreamingPCM(_ text: String) async throws {
-        await MainActor.run { isGenerating = true }
-        
-        // Stop any existing playback
-        stopSpeaking()
-        
-        // Create and setup player
-        let player = RobustStreamingPlayer()
-        
-        await MainActor.run {
-            self.robustPlayer = player
-        }
-        
-        // Setup the audio engine BEFORE streaming starts
-        do {
-            try await player.setupEngine()
-        } catch {
-            print("❌ Failed to setup streaming player: \(error)")
-            await MainActor.run {
-                self.isGenerating = false
-                self.robustPlayer = nil
-            }
-            throw error
-        }
-        
-        // Setup completion handler
-        player.onPlaybackComplete = { [weak self] in
-            Task { @MainActor in
-                self?.handleStreamingComplete()
-            }
-        }
-        
-        // Build streaming request
-        let url = URL(string: "\(base)/\(cfg.elevenLabsVoiceId)/stream?output_format=pcm_24000")!
-        
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue(cfg.elevenLabsAPIKey, forHTTPHeaderField: "xi-api-key")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("audio/wav", forHTTPHeaderField: "Accept")
-        
-        let body: [String: Any] = [
-            "text": text,
-            "model_id": "eleven_turbo_v2_5",
-            "voice_settings": [
-                "stability": 0.6,
-                "similarity_boost": 0.8,
-                "style": 0.2,
-                "use_speaker_boost": true
-            ]
-        ]
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
-        await MainActor.run {
-            isGenerating = false
-            isSpeaking = true
-        }
-        
-        // Stream audio data
-        currentStreamTask = Task {
-            do {
-                let (bytes, response) = try await URLSession.shared.bytes(for: req)
-                
-                guard let httpResponse = response as? HTTPURLResponse,
-                      httpResponse.statusCode == 200 else {
-                    throw ElevenLabsError.invalidResponse
-                }
-                
-                // Process streaming data in chunks
-                var buffer = Data()
-                let chunkSize = 4800  // 200ms at 24kHz
-                var totalBytes = 0
-                
-                for try await byte in bytes {
-                    guard !Task.isCancelled else { break }
-                    
-                    buffer.append(byte)
-                    totalBytes += 1
-                    
-                    // Feed chunks to player
-                    if buffer.count >= chunkSize {
-                        let chunk = buffer.prefix(chunkSize)
-                        player.feedAudioData(Data(chunk))
-                        buffer.removeFirst(chunkSize)
-                    }
-                }
-                
-                // Feed any remaining data
-                if !buffer.isEmpty {
-                    player.feedAudioData(buffer)
-                }
-                
-                print("📊 Streaming complete - received \(totalBytes) bytes")
-                
-                // Signal completion
-                player.finishStreaming()
-                
-            } catch {
-                print("❌ Streaming error: \(error)")
-                Task { @MainActor in
-                    self.robustPlayer?.stop()
-                    self.handleStreamingComplete()
-                }
-            }
-        }
-    }
-
-    @MainActor
-    private func handleStreamingComplete() {
-        isSpeaking = false
-        robustPlayer = nil
-        currentStreamTask = nil
-        
-        // Resume STT if needed
-        if ContentView.isAlwaysListeningGlobal {
-            ContentView.sharedSpeechRecognizer?.startRecording()
-            print("🎤 RESUME STT after streaming")
-        }
-    }
     
     // MARK: - MP3 Mode (existing code)
     
     private func speakBlockingGeorge(_ text: String) async throws {
-        // Remove the audio session configuration from here - it's handled in playMP3
-        
         let url = URL(string: "\(base)/\(cfg.elevenLabsVoiceId)")!
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -267,21 +134,20 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
 
         await playMP3(data)
     }
+    
     @MainActor
     private func playMP3(_ data: Data) async {
         // Stop any existing playback
         stopSpeaking()
         
-        // IMPORTANT: Wait a bit for audio session to settle after STT stops
+        // Wait a bit for audio session to settle after STT stops
         try? await Task.sleep(nanoseconds: 200_000_000) // 200ms
         
-        // Configure audio session - use the same category as STT to avoid conflicts
+        // Configure audio session
         let session = AVAudioSession.sharedInstance()
         do {
-            // Don't change category - just ensure we're active and routing to speaker
             try session.setActive(true)
             try session.overrideOutputAudioPort(.speaker)
-            
             print("🔊 Audio session configured for playback")
         } catch {
             print("❌ Audio session error: \(error)")
@@ -334,6 +200,7 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         Task { @MainActor in
             self.isSpeaking = false
             self.fallbackSynth = nil
+            ContentView.sharedSpeechRecognizer?.notifyTTSComplete()
         }
     }
     
@@ -348,6 +215,7 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         Task { @MainActor in
             if self.mp3Player === player { self.mp3Player = nil }
             self.isSpeaking = false
+            ContentView.sharedSpeechRecognizer?.notifyTTSComplete()
         }
     }
 
@@ -564,4 +432,42 @@ extension ElevenLabsService {
             print("❌ Stream test failed: \(error)")
         }
     }
+    
+    
+    /// Test method to verify PCM is working
+    func testPCMDirectly() async {
+        print("\n🧪 ===== Direct PCM Test =====")
+        
+        let testText = "Testing PCM audio streaming directly"
+        
+        print("1️⃣ Config check:")
+        print("   - useStreamingTTS: \(cfg.useStreamingTTS)")
+        print("   - hasElevenLabs: \(cfg.hasElevenLabs)")
+        
+        print("2️⃣ Initializing PCM streamer...")
+        await MainActor.run {
+            self.pcmStreamer = PCMStreamingService()
+        }
+        print("   - pcmStreamer initialized: \(pcmStreamer != nil)")
+        
+        print("3️⃣ Calling streamSpeech directly...")
+        let start = Date()
+        
+        await pcmStreamer?.streamSpeech(testText)
+        
+        let duration = Date().timeIntervalSince(start) * 1000
+        print("✅ Test completed in \(Int(duration))ms")
+        
+        print("🧪 ===== End Direct PCM Test =====\n")
+    }
+    
+    /// Add logging to the init method
+    func debugInit() {
+        print("\n🏗️ ===== ElevenLabsService.init() =====")
+        print("🔧 Config at init time:")
+        print("   - useStreamingTTS: \(cfg.useStreamingTTS)")
+        print("   - hasElevenLabs: \(cfg.hasElevenLabs)")
+        print("🏗️ ===== End init =====\n")
+    }
+    
 }
