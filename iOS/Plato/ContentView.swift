@@ -172,6 +172,28 @@ struct ContentView: View {
                 speechRecognizer.stopAlwaysListening()
                 stopAllTTS()
             }
+            
+//            .overlay(alignment: .bottom) {
+//                VStack {
+//                    Button("Test ElevenLabs Formats") {
+//                        Task {
+//                            await elevenLabsService.probeAllFormats()
+//                        }
+//                    }
+//                    .buttonStyle(.borderedProminent)
+//                    .padding()
+//                    
+//                    Button("Test Streaming Endpoint") {
+//                        Task {
+//                            await elevenLabsService.testStreamingEndpoint()
+//                        }
+//                    }
+//                    .buttonStyle(.bordered)
+//                    .padding()
+//                    
+//                }
+//                .background(.ultraThinMaterial)
+//            }
             .onChange(of: speechRecognizer.transcript, initial: false) { oldText, newText in
                 guard !elevenLabsService.isSpeaking else { return }
                 print("📥 partial:", newText)
@@ -184,6 +206,95 @@ struct ContentView: View {
                 if isSpeaking {
                     speechRecognizer.stopRecording()
                 }
+            }
+            .overlay(alignment: .bottom) {
+                #if DEBUG
+                VStack {
+                    Text("🧪 PCM Streaming Tests")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .padding(.top, 8)
+                    
+                    HStack(spacing: 12) {
+                        Button(action: {
+                            Task {
+                                // Test tone (Phase 1)
+                                print("🛑 Stopping all audio activity for test...")
+                                
+                                let wasAlwaysListening = isAlwaysListening
+                                if wasAlwaysListening {
+                                    isAlwaysListening = false
+                                    speechRecognizer.stopAlwaysListening()
+                                }
+                                
+                                speechRecognizer.stopRecording()
+                                elevenLabsService.stopSpeaking()
+                                
+                                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                                
+                                print("🎵 Running PCM test...")
+                                let player = MinimalPCMPlayer()
+                                await player.testPCMPlayback()
+                                
+                                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                                
+                                if wasAlwaysListening {
+                                    isAlwaysListening = true
+                                    speechRecognizer.startAlwaysListening()
+                                }
+                                
+                                print("✅ Test complete, normal operation resumed")
+                            }
+                        }) {
+                            Label("Phase 1", systemImage: "waveform")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        
+                        Button(action: {
+                            Task {
+                                // ElevenLabs streaming (Phase 2)
+                                print("🛑 Stopping all audio activity for streaming test...")
+                                
+                                let wasAlwaysListening = isAlwaysListening
+                                if wasAlwaysListening {
+                                    isAlwaysListening = false
+                                    speechRecognizer.stopAlwaysListening()
+                                }
+                                
+                                speechRecognizer.stopRecording()
+                                elevenLabsService.stopSpeaking()
+                                
+                                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                                
+                                print("🎵 Running ElevenLabs PCM streaming test...")
+                                let player = MinimalPCMPlayer()
+                                await player.testElevenLabsPCM()
+                                
+                                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                                
+                                if wasAlwaysListening {
+                                    isAlwaysListening = true
+                                    speechRecognizer.startAlwaysListening()
+                                }
+                                
+                                print("✅ Streaming test complete")
+                            }
+                        }) {
+                            Label("Phase 2", systemImage: "waveform.and.person.filled")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(!elevenLabsService.isConfigured)
+                    }
+                }
+                .padding()
+                .background(.ultraThinMaterial)
+                .cornerRadius(12)
+                .padding(.bottom, 50)
+                #endif
             }
             .alert("Error", isPresented: $showingError) {
                 Button("OK") { }
@@ -435,6 +546,7 @@ struct ContentView: View {
         }
         
         isLoading = true
+        speechRecognizer.stopRecording()
         streamingBuffer = ""
         
         // placeholder for assistant

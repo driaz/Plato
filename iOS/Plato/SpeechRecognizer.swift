@@ -21,10 +21,11 @@ class SpeechRecognizer: ObservableObject {
     @Published var isMonitoringForInterruption: Bool = false   // placeholder; off in Phase 1
     
     // Core
-    private var audioEngine = AVAudioEngine()
+//    private var audioEngine = AVAudioEngine()
     private var speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
+    private var audioEngine = AVAudioEngine()
     
     // Turn state
     private var hasContent = false
@@ -141,18 +142,12 @@ class SpeechRecognizer: ObservableObject {
         recognitionTask?.cancel()
         recognitionTask = nil
         
-        // Shared audio session (speaker + mic) *but* STT needs .measurement mode.
-        AudioSessionManager.shared.configureForDuplex()     // sets playAndRecord / voiceChat
-
+        // Request speech recognition mode
         do {
-            let s = AVAudioSession.sharedInstance()
-            // 👉 override just the mode for speech-to-text
-            try s.setCategory(.playAndRecord,
-                              mode: .measurement,
-                              options: [.defaultToSpeaker, .allowBluetooth])
-            try s.setActive(true)
+            try AudioCoordinator.shared.requestSpeechRecognitionMode()
         } catch {
-            print("⚠️ Failed to configure STT session:", error)
+            print("❌ Failed to request speech recognition mode: \(error)")
+            return
         }
         
         // New request
@@ -183,10 +178,11 @@ class SpeechRecognizer: ObservableObject {
             }
         }
         
-        // Feed audio
+        // Configure audio engine
         let inputNode = audioEngine.inputNode
         inputNode.removeTap(onBus: 0)
         let format = inputNode.outputFormat(forBus: 0)
+        
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
             self?.recognitionRequest?.append(buf)
         }
@@ -196,9 +192,10 @@ class SpeechRecognizer: ObservableObject {
             try audioEngine.start()
             isRecording = true
             resetTurnState(clearTranscript: true)
-            print("🎙️ AudioEngine started (listening).")
+            print("🎙️ Speech recognition started")
         } catch {
             print("Failed to start audio engine: \(error)")
+            AudioCoordinator.shared.releaseCurrentMode()
             stopRecording()
         }
     }
@@ -220,11 +217,20 @@ class SpeechRecognizer: ObservableObject {
         recognitionTask?.cancel()
         recognitionTask = nil
         
+        // Release audio mode
+        AudioCoordinator.shared.releaseCurrentMode()
+        
         isRecording = false
         hasContent = false
         
         // Clear transcript to prevent echo
         transcript = ""
+        
+        // IMPORTANT: Give the audio session time to release
+        // This prevents conflicts when TTS starts immediately after
+        Task {
+            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        }
     }
     
     // MARK: Recognition Handling
@@ -364,3 +370,21 @@ class SpeechRecognizer: ObservableObject {
         return text
     }
 }
+
+// Add these methods to SpeechRecognizer.swift
+
+//extension SpeechRecognizer {
+//    /// Stop the audio engine for TTS playback
+//    func stopEngineForPlayback() {
+//        if audioEngine.isRunning {
+//            audioEngine.stop()
+//            audioEngine.inputNode.removeTap(onBus: 0)
+//            print("🛑 Stopped speech engine for TTS playback")
+//        }
+//    }
+//    
+//    /// Check if audio engine is running
+//    var isEngineRunning: Bool {
+//        audioEngine.isRunning
+//    }
+//}

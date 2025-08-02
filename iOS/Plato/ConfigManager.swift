@@ -124,6 +124,7 @@ struct ConfigManager {
     }
     
     var useStreamingTTS: Bool {
+        // Enable streaming! We've earned it!
         bool(ConfigKeys.useStreamingTTS) ?? true
     }
     
@@ -142,7 +143,9 @@ struct ConfigManager {
     // MARK: - ElevenLabs Configuration
     
     var elevenLabsVoiceId: String {
-        string(ConfigKeys.elevenLabsVoiceId) ?? "JBFqnCBsd6RMkjVDRZzb"
+        let id = string(ConfigKeys.elevenLabsVoiceId) ?? "54iwHRhRaUH4syXwhP7D"
+        print("🎤 Using voice ID: \(id)")  // Add this line
+        return id;
     }
     
     /// ElevenLabs streaming latency optimization: 0=default, 1=fastest, 2=balanced
