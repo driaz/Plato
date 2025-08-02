@@ -128,6 +128,12 @@ class SpeechRecognizer: ObservableObject {
         isPaused = false
         resetTurnState(clearTranscript: true)
         print("🎙️ SpeechRecognizer resumed.")
+        
+        // IMPORTANT: Actually restart recording if not already recording
+        if !isRecording {
+            print("🎤 Starting recording in resumeListening")
+            startRecording()
+        }
     }
     
     // MARK: Start / Stop
@@ -275,52 +281,37 @@ class SpeechRecognizer: ObservableObject {
             print("🔇 No speech detected - checking if we should restart")
             stopRecording()
             
-            // CRITICAL FIX: Check if TTS is speaking before scheduling restart
-            if isAlwaysListening && !isPaused {
+            // IMPORTANT: Check if TTS is speaking before attempting restart
+            let isTTSSpeaking = ContentView.sharedElevenLabs?.isSpeaking ?? false
+            
+            // If we're in always-listening mode, not paused, AND TTS is not speaking
+            if isAlwaysListening && !isPaused && !isTTSSpeaking {
                 restartTimer?.invalidate()
                 restartTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] _ in
                     Task { @MainActor in
                         guard let self = self,
                               self.isAlwaysListening,
                               !self.isPaused,
-                              !self.isRecording else {
-                            print("🚫 Restart cancelled - conditions not met")
-                            return
-                        }
+                              !self.isRecording else { return }
                         
-                        // CHECK TTS STATE BEFORE RESTARTING
-                        if let elevenLabs = ContentView.sharedElevenLabs {
-                            print("🔍 TTS Check - isSpeaking: \(elevenLabs.isSpeaking), isGenerating: \(elevenLabs.isGenerating)")
-                            
-                            if elevenLabs.isSpeaking || elevenLabs.isGenerating {
-                                print("🔇 Skipping restart - TTS is active")
-                                // Schedule another check later
-                                self.scheduleDelayedRestart()
-                                return
-                            }
+                        // Double-check TTS isn't speaking
+                        let stillNotSpeaking = ContentView.sharedElevenLabs?.isSpeaking != true
+                        if stillNotSpeaking {
+                            print("🔄 Restarting speech recognition after no speech detected")
+                            self.startRecording()
                         } else {
-                            print("⚠️ Could not get ElevenLabs reference!")
+                            print("🔇 Skipping restart - TTS is speaking")
                         }
-                        
-                        // Also check if we're within a grace period after TTS
-                        let timeSinceLastTTS = Date().timeIntervalSince(self.lastTTSEndTime)
-                        if timeSinceLastTTS < 2.0 {
-                            print("🔇 Skipping restart - within TTS grace period (\(Int(timeSinceLastTTS * 1000))ms)")
-                            self.scheduleDelayedRestart()
-                            return
-                        }
-                        
-                        print("🔄 Restarting speech recognition after no speech detected")
-                        self.startRecording()
                     }
                 }
+            } else {
+                print("🔍 TTS Check - isSpeaking: \(isTTSSpeaking), isGenerating: \(ContentView.sharedElevenLabs?.isGenerating ?? false)")
             }
         } else {
             // For other errors, just stop
             stopRecording()
         }
     }
-    
     // MARK: Helper to get ElevenLabsService
     
     private func getElevenLabsService() -> ElevenLabsService? {
@@ -424,27 +415,60 @@ class SpeechRecognizer: ObservableObject {
         }
     }
     
+    func stopForTTS() {
+        print("🛑 Force stopping speech recognizer for TTS")
+        
+        // Cancel any pending restart timers
+        restartTimer?.invalidate()
+        restartTimer = nil
+        
+        // Stop recording if active
+        if isRecording {
+            stopRecording()
+        }
+        
+        // Mark as paused to prevent auto-restarts
+        if isAlwaysListening {
+            isPaused = true
+        }
+    }
+    
     func notifyTTSComplete() {
         lastTTSEndTime = Date()
         print("📢 TTS completed, setting grace period")
+        print("   - isAlwaysListening: \(isAlwaysListening)")
+        print("   - isRecording: \(isRecording)")
+        print("   - isPaused: \(isPaused)")
+        
+        // If somehow still recording, stop it first
+        if isRecording {
+            print("   ⚠️ Still recording - stopping first")
+            stopRecording()
+        }
         
         // Resume listening if it was paused
         if isPaused {
+            print("   → Resuming from paused state")
             resumeListening()
-        }
-        
-        // If we're in always-listening mode and not currently recording,
-        // schedule a restart after a brief delay
-        if isAlwaysListening && !isRecording && !isPaused {
+        } else if isAlwaysListening && !isRecording {
+            // If we're in always-listening mode and not currently recording,
+            // schedule a restart after a brief delay
+            print("   → Scheduling restart in 0.5s")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 if self.isAlwaysListening && !self.isRecording && !self.isPaused {
                     print("🎤 Resuming speech recognition after TTS")
                     self.startRecording()
+                } else {
+                    print("   ⚠️ Restart conditions not met after delay:")
+                    print("      - isAlwaysListening: \(self.isAlwaysListening)")
+                    print("      - isRecording: \(self.isRecording)")
+                    print("      - isPaused: \(self.isPaused)")
                 }
             }
+        } else {
+            print("   ⚠️ Not scheduling restart - conditions not met")
         }
     }
-    
     // MARK: - Placeholder interruption API
     func startInterruptionMonitoring(aiResponse _: String = "") {}
     func stopInterruptionMonitoring() {}

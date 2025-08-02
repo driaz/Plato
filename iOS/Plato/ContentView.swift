@@ -222,14 +222,25 @@ struct ContentView: View {
 //                    }
 //                }
 //            }
-            .onChange(of: elevenLabsService.isSpeaking) { _, isSpeaking in
-                guard isAlwaysListening else { return }
-                if isSpeaking {
-                    print("🛑 TTS started - stopping speech recognition immediately")
-                    speechRecognizer.stopRecording()
-                }
-                // Let notifyTTSComplete() handle the resume logic
-            }
+//            .onChange(of: elevenLabsService.isSpeaking) { _, isSpeaking in
+//                guard isAlwaysListening else { return }
+//                if isSpeaking {
+//                    print("🛑 TTS started - stopping speech recognition immediately")
+//                    speechRecognizer.stopRecording()
+//                }
+//                // Let notifyTTSComplete() handle the resume logic
+//            }
+//            .onChange(of: elevenLabsService.isSpeaking) { _, isSpeaking in
+//                guard isAlwaysListening else { return }
+//                if isSpeaking {
+//                    // Only stop if actually recording to prevent unnecessary stops
+//                    if speechRecognizer.isRecording {
+//                        print("🛑 Stopping speech recognizer for TTS playback")
+//                        speechRecognizer.stopRecording()
+//                    }
+//                }
+//                // Don't handle the false case - let notifyTTSComplete() handle resuming
+//            }
             .overlay(alignment: .bottom) {
                 #if DEBUG
                 VStack {

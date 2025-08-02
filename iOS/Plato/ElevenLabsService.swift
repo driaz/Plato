@@ -29,11 +29,16 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     // MARK: - Public API
     
     /// Speak text using PCM streaming when enabled, MP3 fallback otherwise
+    // In ElevenLabsService.swift, update the speak method to use stopForTTS:
+
     func speak(_ raw: String) async {
         // CRITICAL: Set isSpeaking IMMEDIATELY to prevent race conditions
         await MainActor.run {
             self.isSpeaking = true
             print("🔊 TTS Starting - isSpeaking = true")
+            
+            // Force stop speech recognition and prevent auto-restarts
+            ContentView.sharedSpeechRecognizer?.stopForTTS()
         }
         
         stopSpeaking()

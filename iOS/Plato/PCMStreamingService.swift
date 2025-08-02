@@ -94,7 +94,7 @@ final class PCMStreamingService: ObservableObject {
             }
             
             // Add a small buffer after playback completes
-            try await Task.sleep(nanoseconds: 200_000_000) // 200ms
+            try await Task.sleep(nanoseconds: 500_000_000) // 500ms
             
         } catch {
             print("❌ Streaming error: \(error)")
@@ -105,6 +105,7 @@ final class PCMStreamingService: ObservableObject {
         
         isSpeaking = false
         isGenerating = false
+        
     }
     
     private func setupAudioSession() async throws {
