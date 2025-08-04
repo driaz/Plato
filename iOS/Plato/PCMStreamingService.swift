@@ -157,7 +157,7 @@ final class PCMStreamingService: ObservableObject {
                                      interleaved: false)!
         
         engine.connect(playerNode, to: engine.outputNode, format: nodeFormat)
-        
+                
         try engine.start()
         playerNode.play()
         
@@ -289,10 +289,14 @@ final class PCMStreamingService: ObservableObject {
         floatBuffer.frameLength = AVAudioFrameCount(inputFrameCount)
         
         // Convert int16 to float32
+        let volumeBoost: Float = 2.0  // Amplification factor (adjust as needed)
+        
         if let int16Data = inputBuffer.int16ChannelData?[0],
            let floatData = floatBuffer.floatChannelData?[0] {
             for i in 0..<inputFrameCount {
-                floatData[i] = Float(int16Data[i]) / Float(Int16.max)
+                // Amplify and clamp to prevent distortion
+                let amplified = Float(int16Data[i]) / Float(Int16.max) * volumeBoost
+                floatData[i] = max(-1.0, min(1.0, amplified))
             }
         }
         

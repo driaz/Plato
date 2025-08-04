@@ -59,6 +59,14 @@ class SpeechRecognizer: ObservableObject {
     
     init() {
         speechRecognizer?.defaultTaskHint = .dictation
+        
+        // DEBUG: See what values are actually being used
+        print("🎙️ Speech Recognition Timings:")
+        print("   - Silence threshold: \(cfg.speechSilenceThreshold)s")
+        print("   - Stability window: \(cfg.speechStabilityWindow)s")
+        print("   - Post-playback grace: \(cfg.speechPostPlaybackGrace)s")
+        print("   - VAD threshold: \(String(describing: cfg.vadEnergyFloorDb)) dB")
+        
         requestPermission()
     }
     
