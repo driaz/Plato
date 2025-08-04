@@ -10,6 +10,8 @@ import Foundation
 struct ConfigKeys {
     static let openAIAPIKey              = "OpenAI_API_Key"
     static let elevenLabsAPIKey          = "ElevenLabs_API_Key"
+    static let braveSearchAPIKey         = "Brave_Search_API_Key"
+
     
     // Speech Recognition Tunables
     static let speechSilenceThreshold    = "Speech_SilenceThresholdSeconds"
@@ -95,6 +97,16 @@ struct ConfigManager {
         return ""
     }
     
+    var braveSearchAPIKey: String {
+        if let key = string(ConfigKeys.braveSearchAPIKey), key != "YOUR_BRAVE_API_KEY_HERE" {
+            return key
+        }
+        if let env = ProcessInfo.processInfo.environment["BRAVE_SEARCH_API_KEY"], !env.isEmpty {
+            return env
+        }
+        return ""
+    }
+    
     // MARK: - Speech Recognition Tunables
     
     var speechSilenceThreshold: TimeInterval {
@@ -139,6 +151,9 @@ struct ConfigManager {
     var llmMaxTokens: Int {
         Int(number(ConfigKeys.llmMaxTokens) ?? 150)
     }
+    
+    var hasBraveSearch: Bool { !braveSearchAPIKey.isEmpty }
+
     
     // MARK: - ElevenLabs Configuration
     

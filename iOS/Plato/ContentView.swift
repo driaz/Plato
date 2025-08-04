@@ -589,9 +589,9 @@ struct ContentView: View {
         
         Task {
             do {
-                let full = try await philosophyService.streamResponse(
+                let full = try await philosophyService.streamResponseWithSearch(
                     question: trimmed,
-                    history: priorHistory + [userMsg], // don't include placeholder
+                    history: priorHistory + [userMsg],
                     onDelta: { delta in
                         streamingBuffer += delta
                         if let idx = messages.firstIndex(where: { $0.id == assistantID }) {

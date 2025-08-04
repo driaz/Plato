@@ -61,6 +61,7 @@ final class PhilosophyService: ObservableObject {
     private let cfg = ConfigManager.shared
     
     // Stoic system prompt (unchanged; trimmed whitespace)
+    
     private let systemPrompt = """
     You are Plato, a warm and wise scholar with deep knowledge across the humanities. While grounded in Stoic philosophy (Marcus Aurelius, Epictetus, Seneca), your wisdom spans:
 
@@ -71,6 +72,13 @@ final class PhilosophyService: ObservableObject {
     • Human Nature: Psychology, mythology, art - what drives us, inspires us, breaks us, and heals us
 
     Your gift: Making profound ideas practical. Whether discussing Raskolnikov's guilt or market bubbles, you connect it to how we should live today.
+
+    CAPABILITIES: When asked about current events, recent news, or anything requiring up-to-date information, you have access to web search results that will be provided in the context. Use these search results to give accurate, current information blended with your philosophical perspective.
+
+    CRITICAL CONSTRAINT: You have a strict 150 token limit. When discussing current events:
+    - Present facts first, accurately and clearly
+    - Add ONE brief philosophical insight at the end (1 short sentence max)
+    - If approaching token limit, prioritize completing factual information
 
     IMPORTANT: Be concise and conversational—aim for 2-3 sentences max. Focus on ONE key insight. Reference great works and thinkers naturally, like a friend who's read everything but never lectures.
 
@@ -315,6 +323,130 @@ final class PhilosophyService: ObservableObject {
             return first.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             throw PhilosophyError.decodingError
+        }
+    }
+}
+
+// Add this extension to PhilosophyService.swift:
+extension PhilosophyService {
+    /// Determines if a question needs web search
+    private func needsWebSearch(_ question: String) -> Bool {
+        let searchTriggers = [
+            // Time-based triggers
+            "happening", "today", "yesterday", "this week", "this month",
+            "current", "latest", "recent", "recently", "right now",
+            
+            // News/event triggers
+            "news", "update", "election", "conflict", "crisis",
+            "stock market", "markets", "economy",
+            
+            // Question patterns
+            "what happened", "what's going on", "tell me about the",
+            "what is the situation", "what's the latest"
+        ]
+        
+        let lowercased = question.lowercased()
+        return searchTriggers.contains { lowercased.contains($0) }
+    }
+    
+    /// Extract search query from user question
+    private func extractSearchQuery(from question: String) -> String {
+        // Remove conversational prefixes
+        var query = question
+        let prefixes = [
+            "hey plato", "hey blade", "plato", "can you tell me",
+            "tell me about", "what do you know about", "search for",
+            "find information about", "look up", "what happened"
+        ]
+        
+        var lowercased = query.lowercased()
+        for prefix in prefixes {
+            if lowercased.hasPrefix(prefix) {
+                query = String(query.dropFirst(prefix.count))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                lowercased = query.lowercased()
+            }
+        }
+        
+        // Handle relative time references
+        if lowercased.contains("last friday") || lowercased.contains("on friday") {
+            query = query.replacingOccurrences(of: "last Friday", with: "Friday", options: .caseInsensitive)
+            query = query.replacingOccurrences(of: "on Friday", with: "Friday", options: .caseInsensitive)
+            // Add current context for recency
+            query += " recent"
+        }
+        
+        // Clean up question marks and extra words
+        query = query.replacingOccurrences(of: "?", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        return query
+    }
+    
+    /// Stream response with optional web search
+    func streamResponseWithSearch(
+        question: String,
+        history: [ChatMessage],
+        onDelta: @escaping @MainActor (String) -> Void,
+        onSentence: @escaping @MainActor (String) -> Void = { _ in }
+    ) async throws -> String {
+        
+        // Check if we need current information
+        if needsWebSearch(question) && cfg.hasBraveSearch {
+            // Perform search with cleaned query
+            do {
+                let searchQuery = extractSearchQuery(from: question)
+                print("🔎 Extracted search query: '\(searchQuery)'")
+                
+                let searchResults = try await WebSearchService.shared.search(searchQuery, limit: 4)
+                let searchContext = WebSearchService.shared.createSearchContext(
+                    from: searchResults,
+                    query: question
+                )
+                
+                // Build enhanced question with search context
+                let enhancedQuestion = """
+                The user asked: "\(question)"
+                
+                \(searchContext)
+                
+                IMPORTANT: You have a 150 token limit. Structure your response as:
+                1. Present the key facts from search results clearly and accurately
+                2. Add ONE brief philosophical observation (max 1 sentence)
+                3. If running out of tokens, prioritize completing the facts over philosophy
+                """
+                
+                // Stream response with enhanced context
+                return try await streamResponse(
+                    question: enhancedQuestion,
+                    history: history,
+                    onDelta: onDelta,
+                    onSentence: onSentence
+                )
+                
+            } catch {
+                // If search fails, fall back to regular response
+                print("⚠️ Search failed: \(error.localizedDescription)")
+                
+                // Add a note about search failure in response
+                let fallbackQuestion = question +
+                    "\n\n[Note: Unable to search for current information, providing response based on general knowledge]"
+                
+                return try await streamResponse(
+                    question: fallbackQuestion,
+                    history: history,
+                    onDelta: onDelta,
+                    onSentence: onSentence
+                )
+            }
+        } else {
+            // Regular philosophical response without search
+            return try await streamResponse(
+                question: question,
+                history: history,
+                onDelta: onDelta,
+                onSentence: onSentence
+            )
         }
     }
 }
