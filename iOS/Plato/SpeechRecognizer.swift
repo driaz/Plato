@@ -5,6 +5,10 @@
 //  Updated to prevent auto-restart during TTS playback
 //
 
+// NOTE: iOS system logs 1101 errors after multiple recognition cycles
+// This is normal behavior and doesn't affect functionality
+// Filter with "!1101" in Xcode console if needed
+
 import Foundation
 import Speech
 import SwiftUI
@@ -46,6 +50,11 @@ class SpeechRecognizer: ObservableObject {
     private var lastPartialText = ""
     private var lastPartialTime = Date()
     private var llmTriggered = false
+    
+    // Error tracking
+    private var lastErrorCode: Int?
+    private var lastErrorTime = Date.distantPast
+    private var consecutiveErrorCount = 0
     
     // Callbacks
     var onAutoUpload: ((String) -> Void)?
@@ -281,18 +290,34 @@ class SpeechRecognizer: ObservableObject {
     }
     
     private func handleRecognitionError(_ error: Error) {
-        print("❌ Recognition error: \(error)")
-        
-        // Check if it's a "No speech detected" error
         let nsError = error as NSError
+        
+        // SUPPRESS SPAMMY 1101 ERRORS - COMPLETELY SILENT
+        if nsError.code == 1101 {
+            // Just return immediately - no logging, no processing
+            return
+        }
+        
+        // LIMIT OTHER REPEATED ERRORS
+        if nsError.code == lastErrorCode && nsError.code != 1110 { // Don't limit 1110
+            consecutiveErrorCount += 1
+            if consecutiveErrorCount > 3 {
+                if consecutiveErrorCount == 4 {
+                    print("❌ Suppressing further '\(error.localizedDescription)' errors...")
+                }
+                return
+            }
+        } else {
+            lastErrorCode = nsError.code
+            consecutiveErrorCount = 1
+        }
+        
+        // Check if it's a "No speech detected" error BEFORE logging
         if nsError.domain == "kAFAssistantErrorDomain" && nsError.code == 1110 {
-            print("🔇 No speech detected - checking if we should restart")
             stopRecording()
             
-            // IMPORTANT: Check if TTS is speaking before attempting restart
             let isTTSSpeaking = ContentView.sharedElevenLabs?.isSpeaking ?? false
             
-            // If we're in always-listening mode, not paused, AND TTS is not speaking
             if isAlwaysListening && !isPaused && !isTTSSpeaking {
                 restartTimer?.invalidate()
                 restartTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] _ in
@@ -302,24 +327,21 @@ class SpeechRecognizer: ObservableObject {
                               !self.isPaused,
                               !self.isRecording else { return }
                         
-                        // Double-check TTS isn't speaking
                         let stillNotSpeaking = ContentView.sharedElevenLabs?.isSpeaking != true
                         if stillNotSpeaking {
-                            print("🔄 Restarting speech recognition after no speech detected")
+                            print("🔄 Restarting speech recognition")
                             self.startRecording()
-                        } else {
-                            print("🔇 Skipping restart - TTS is speaking")
                         }
                     }
                 }
-            } else {
-                print("🔍 TTS Check - isSpeaking: \(isTTSSpeaking), isGenerating: \(ContentView.sharedElevenLabs?.isGenerating ?? false)")
             }
         } else {
-            // For other errors, just stop
+            // Only log non-1101, non-1110 errors
+            print("❌ Recognition error: \(error)")
             stopRecording()
         }
     }
+    
     // MARK: Helper to get ElevenLabsService
     
     private func getElevenLabsService() -> ElevenLabsService? {

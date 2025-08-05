@@ -30,13 +30,13 @@ final class AudioCoordinator {
         // Don't change the category if we're already in a compatible mode
         if currentMode != .speechRecognition {
             let session = AVAudioSession.sharedInstance()
-            // Keep the same category/mode, just ensure it's active
             try session.setActive(true, options: .notifyOthersOnDeactivation)
         }
         
         currentMode = .speechRecognition
         print("🎤 Audio mode: Speech Recognition")
     }
+    
     /// Request to switch to text-to-speech mode
     func requestTextToSpeechMode() throws {
         // If already in TTS mode, just return
@@ -56,7 +56,6 @@ final class AudioCoordinator {
     func releaseCurrentMode() {
         let previousMode = currentMode
         currentMode = .idle
-        print("😴 Audio mode: Idle (was \(previousMode))")
         
         // Don't change the audio session - keep it in a stable state
     }
