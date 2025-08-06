@@ -32,6 +32,10 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     // In ElevenLabsService.swift, update the speak method to use stopForTTS:
 
     func speak(_ raw: String) async {
+        
+        stopSpeaking()
+        let text = Self.cleanText(raw)
+        
         // CRITICAL: Set isSpeaking IMMEDIATELY to prevent race conditions
         await MainActor.run {
             self.isSpeaking = true
@@ -40,9 +44,6 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
             // Force stop speech recognition and prevent auto-restarts
             ContentView.sharedSpeechRecognizer?.stopForTTS()
         }
-        
-        stopSpeaking()
-        let text = Self.cleanText(raw)
         
         // Check if we should use PCM streaming
         if cfg.useStreamingTTS && cfg.hasElevenLabs {
@@ -55,7 +56,8 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
             
             // Use PCM streaming for low latency
             await pcmStreamer?.streamSpeech(text)
-            
+//            await pcmStreamer?.streamSpeechDebug(text)
+
             // IMPORTANT: Wait for streaming to actually complete
             // The streamSpeech method should complete only when audio finishes
             await MainActor.run {

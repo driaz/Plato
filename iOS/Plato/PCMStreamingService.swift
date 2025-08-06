@@ -569,6 +569,7 @@ extension PCMStreamingService {
         
         guard httpResponse.statusCode == 200 else {
             print("❌ Bad status code: \(httpResponse.statusCode)")
+            await handleElevenLabsError(httpResponse, bytes: bytes)
             throw StreamingError.badResponse
         }
         
@@ -635,5 +636,59 @@ extension PCMStreamingService {
         // Call the original processing method
         processAudioChunk(data)
         print("  ✅ Chunk scheduled to player")
+    }
+    
+    private func handleElevenLabsError(_ httpResponse: HTTPURLResponse, bytes: URLSession.AsyncBytes) async {
+        print("❌ ElevenLabs API returned status: \(httpResponse.statusCode)")
+        
+        switch httpResponse.statusCode {
+        case 401:
+            print("🔑 Check your ElevenLabs API key in Config.plist")
+            
+        case 422:
+            print("⚠️ Invalid request - check voice ID: \(cfg.elevenLabsVoiceId)")
+            
+        case 429:
+            print("⏳ Rate limited - too many requests")
+            print("📋 Rate limit headers:")
+            for (key, value) in httpResponse.allHeaderFields {
+                if let headerKey = key as? String,
+                   headerKey.lowercased().contains("ratelimit") || headerKey.lowercased().contains("rate-limit") {
+                    print("   - \(headerKey): \(value)")
+                }
+            }
+            
+        case 500:
+            print("🔥 ElevenLabs server error - temporary issue")
+            
+        default:
+            print("🤷 Unexpected status code")
+        }
+        
+        // Try to read error body for all error types
+        var errorData = Data()
+        do {
+            for try await byte in bytes {
+                errorData.append(byte)
+                if errorData.count > 1000 { break }
+            }
+            
+            if let errorString = String(data: errorData, encoding: .utf8) {
+                print("📋 Error response: \(errorString)")
+            }
+            
+            if let errorJson = try? JSONSerialization.jsonObject(with: errorData) as? [String: Any] {
+                print("📋 Error JSON: \(errorJson)")
+                
+                if let detail = errorJson["detail"] {
+                    print("   - Detail: \(detail)")
+                }
+                if let message = errorJson["message"] as? String {
+                    print("   - Message: \(message)")
+                }
+            }
+        } catch {
+            print("⚠️ Could not read error response body")
+        }
     }
 }
