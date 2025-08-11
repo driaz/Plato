@@ -165,11 +165,11 @@ struct ContentView: View {
                     guard !trimmed.isEmpty else { return }
                     
                     if Date() < echoGuardUntil {
-                        print("🛡️ Dropping transcript (within echo guard window): \(trimmed)")
+                        Logger.shared.echoDetected(trimmed, reason: "Within echo guard window")
                         return
                     }
                     if isEcho(transcript: trimmed, of: lastAssistantUtterance) {
-                        print("🛡️ Dropping AI echo transcript: \(trimmed)")
+                        Logger.shared.echoDetected(trimmed, reason: "AI echo detected (content overlap)")
                         return
                     }
                     
@@ -179,7 +179,7 @@ struct ContentView: View {
                 }
                 
                 speechRecognizer.onInterruption = {
-                    print("🚨 User interrupted AI – stopping voice playback")
+                    log("User interrupted AI - stopping voice playback", category: .flow, level: .info)
                     stopAllTTS()
                 }
                 
@@ -202,95 +202,6 @@ struct ContentView: View {
                     inputText = newText
                 }
             }
-//            .overlay(alignment: .bottom) {
-//                #if DEBUG
-//                VStack {
-//                    Text("🧪 PCM Streaming Tests")
-//                        .font(.caption)
-//                        .fontWeight(.bold)
-//                        .padding(.top, 8)
-//                    
-//                    HStack(spacing: 12) {
-//                        Button(action: {
-//                            Task {
-//                                // Test tone (Phase 1)
-//                                print("🛑 Stopping all audio activity for test...")
-//                                
-//                                let wasAlwaysListening = isAlwaysListening
-//                                if wasAlwaysListening {
-//                                    isAlwaysListening = false
-//                                    speechRecognizer.stopAlwaysListening()
-//                                }
-//                                
-//                                speechRecognizer.stopRecording()
-//                                elevenLabsService.stopSpeaking()
-//                                
-//                                try? await Task.sleep(nanoseconds: 1_000_000_000)
-//                                
-//                                print("🎵 Running PCM test...")
-//                                let player = MinimalPCMPlayer()
-//                                await player.testPCMPlayback()
-//                                
-//                                try? await Task.sleep(nanoseconds: 1_000_000_000)
-//                                
-//                                if wasAlwaysListening {
-//                                    isAlwaysListening = true
-//                                    speechRecognizer.startAlwaysListening()
-//                                }
-//                                
-//                                print("✅ Test complete, normal operation resumed")
-//                            }
-//                        }) {
-//                            Label("Phase 1", systemImage: "waveform")
-//                                .font(.caption)
-//                        }
-//                        .buttonStyle(.bordered)
-//                        .controlSize(.small)
-//                        
-//                        Button(action: {
-//                            Task {
-//                                // ElevenLabs streaming (Phase 2)
-//                                print("🛑 Stopping all audio activity for streaming test...")
-//                                
-//                                let wasAlwaysListening = isAlwaysListening
-//                                if wasAlwaysListening {
-//                                    isAlwaysListening = false
-//                                    speechRecognizer.stopAlwaysListening()
-//                                }
-//                                
-//                                speechRecognizer.stopRecording()
-//                                elevenLabsService.stopSpeaking()
-//                                
-//                                try? await Task.sleep(nanoseconds: 1_000_000_000)
-//                                
-//                                print("🎵 Running ElevenLabs PCM streaming test...")
-//                                let player = MinimalPCMPlayer()
-//                                await player.testElevenLabsPCM()
-//                                
-//                                try? await Task.sleep(nanoseconds: 1_000_000_000)
-//                                
-//                                if wasAlwaysListening {
-//                                    isAlwaysListening = true
-//                                    speechRecognizer.startAlwaysListening()
-//                                }
-//                                
-//                                print("✅ Streaming test complete")
-//                            }
-//                        }) {
-//                            Label("Phase 2", systemImage: "waveform.and.person.filled")
-//                                .font(.caption)
-//                        }
-//                        .buttonStyle(.borderedProminent)
-//                        .controlSize(.small)
-//                        .disabled(!elevenLabsService.isConfigured)
-//                    }
-//                }
-//                .padding()
-//                .background(.ultraThinMaterial)
-//                .cornerRadius(12)
-//                .padding(.bottom, 50)
-//                #endif
-//            }
             .alert("Error", isPresented: $showingError) {
                 Button("OK") { }
             } message: {
@@ -699,11 +610,9 @@ extension ContentView {
     
     /// Debug version of askQuestion with PCM logging
     private func askQuestionDebug(_ question: String) {
-        print("\n🔍 ===== askQuestion DEBUG START =====")
-        print("📝 Question: \(question)")
-        print("🔧 PCM Config:")
-        print("   - useStreamingTTS: \(ConfigManager.shared.useStreamingTTS)")
-        print("   - hasElevenLabs: \(ConfigManager.shared.hasElevenLabs)")
+        
+        let flowId = Logger.shared.startFlow("askQuestion: \(question.prefix(30))...")
+        logDebug("PCM Config - streaming: \(ConfigManager.shared.useStreamingTTS), elevenLabs: \(ConfigManager.shared.hasElevenLabs)", category: .tts)
         
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty && !isLoading else { return }
@@ -734,7 +643,9 @@ extension ContentView {
         
         Task {
             do {
-                print("🤖 Getting philosophy response...")
+                Logger.shared.startTimer("Philosophy API")
+                logDebug("Getting philosophy response", category: .llm)
+                
                 let full = try await philosophyService.streamResponse(
                     question: trimmed,
                     history: priorHistory + [userMsg],
@@ -749,7 +660,8 @@ extension ContentView {
                     }
                 )
                 
-                print("✅ Got response: \(full.prefix(50))...")
+                Logger.shared.endTimer("Philosophy API")
+                logDebug("Got response: \(full.prefix(50))...", category: .llm)
                 
                 // finalize assistant turn
                 if let idx = messages.firstIndex(where: { $0.id == assistantID }) {
@@ -760,18 +672,17 @@ extension ContentView {
                 lastAssistantUtterance = normalizeForEcho(full)
                 
                 // Speak the full response at once
-                print("🎤 Starting TTS...")
-                print("   - Using \(ConfigManager.shared.useStreamingTTS ? "PCM" : "MP3") mode")
-                
-                let ttsStart = Date()
+                let ttsMode = ConfigManager.shared.useStreamingTTS ? "PCM" : "MP3"
+                log("Starting TTS in \(ttsMode) mode", category: .tts)
+
+                Logger.shared.startTimer("TTS Speak")
                 await elevenLabsService.speak(full)
-                let ttsDuration = Date().timeIntervalSince(ttsStart) * 1000
-                
-                print("✅ TTS completed in \(Int(ttsDuration))ms")
-                print("🔍 ===== askQuestion DEBUG END =====\n")
+                Logger.shared.endTimer("TTS Speak")
+
+                Logger.shared.endFlow(flowId, name: "askQuestion")
                 
             } catch {
-                print("❌ Error in askQuestion: \(error)")
+                logError("Error in askQuestion: \(error)", category: .flow)
                 let errText = "I apologize—trouble connecting to my wisdom. (\(error.localizedDescription))"
                 if let idx = messages.firstIndex(where: { $0.id == assistantID }) {
                     messages[idx].text = errText

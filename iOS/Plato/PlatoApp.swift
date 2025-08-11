@@ -11,8 +11,22 @@ import SwiftUI
 struct PlatoApp: App {
     
     init() {
-           // Configure audio session once at launch
-           AudioSessionManager.shared.configureForDuplex()
+        // Configure audio session once at launch
+        AudioSessionManager.shared.configureForDuplex()
+        
+        // Configure logging
+        #if DEBUG
+        Logger.shared.setMinimumLevel(.debug)
+        #else
+        Logger.shared.setMinimumLevel(.warning)
+        #endif
+        
+        // Log app launch
+        log("Plato launched", category: .app)
+        
+        // Configure audio session
+        AudioSessionManager.shared.configureForDuplex()
+        
        }
     
     var body: some Scene {

@@ -34,17 +34,26 @@ final class PCMStreamingService: ObservableObject {
 
     /// Stream text to speech with low latency
     func streamSpeech(_ text: String) async {
+        let flowId = Logger.shared.startFlow("PCM_Stream: \(text.prefix(30))...")
+        
         // Cancel any existing stream
         stopSpeaking()
         
         guard cfg.hasElevenLabs else {
-            print("❌ ElevenLabs not configured")
+            Logger.shared.log("❌ ElevenLabs not configured", category: .tts, level: .error)
+            Logger.shared.endFlow(flowId, name: "PCM_Stream")
             return
         }
         
         // Clean the text
         let cleanedText = cleanText(text)
-        guard !cleanedText.isEmpty else { return }
+        guard !cleanedText.isEmpty else {
+            Logger.shared.log("Empty text after cleaning", category: .tts, level: .warning)
+            Logger.shared.endFlow(flowId, name: "PCM_Stream")
+            return
+        }
+        
+        Logger.shared.log("Starting PCM stream - text length: \(cleanedText.count)", category: .tts, level: .debug)
         
         isGenerating = true
         isSpeaking = true  // Set both flags at start
@@ -59,11 +68,13 @@ final class PCMStreamingService: ObservableObject {
         
         // Ensure isSpeaking is false after everything completes
         isSpeaking = false
-        print("🔊 PCMStreamingService - playback complete, isSpeaking = false")
+        Logger.shared.log("🔊 PCMStreamingService - playback complete, isSpeaking = false", category: .tts)
     }
     
     /// Stop any ongoing speech
     func stopSpeaking() {
+        Logger.shared.log("Stopping PCM streaming", category: .tts, level: .debug)
+
         currentTask?.cancel()
         currentTask = nil
         
@@ -78,12 +89,16 @@ final class PCMStreamingService: ObservableObject {
     private func performStreaming(_ text: String) async {
         do {
             // Setup audio engine
+            Logger.shared.startTimer("PCM_Engine_Setup")
             try await setupAudioEngine()
+            Logger.shared.endTimer("PCM_Engine_Setup")
             
             // Start the stream
+            Logger.shared.startTimer("PCM_Streaming_Total")
             try await streamFromElevenLabs(text)
             
             // Wait for actual playback to complete
+            Logger.shared.log("Waiting for playback completion...", category: .tts, level: .debug)
             await withCheckedContinuation { continuation in
                 self.playbackCompletionContinuation = continuation
                 
@@ -92,12 +107,15 @@ final class PCMStreamingService: ObservableObject {
                     continuation.resume()
                 }
             }
-            
+            Logger.shared.endTimer("PCM_Streaming_Total")
+
             // Add a small buffer after playback completes
             try await Task.sleep(nanoseconds: 500_000_000) // 500ms
+            Logger.shared.log("Post-playback buffer complete (500ms)", category: .tts, level: .debug)
+
             
         } catch {
-            print("❌ Streaming error: \(error)")
+            Logger.shared.log("❌ Streaming error: \(error)", category: .tts, level: .error)
         }
         
         // Cleanup
@@ -121,6 +139,8 @@ final class PCMStreamingService: ObservableObject {
         
         try session.setCategory(.playback, mode: .default, options: [])
         try session.setActive(true)
+        
+        Logger.shared.log("Audio session configured for PCM playback", category: .audio, level: .debug)
     }
     
     private func restoreAudioSession() async {
@@ -140,6 +160,8 @@ final class PCMStreamingService: ObservableObject {
                                        options: [.defaultToSpeaker, .allowBluetooth])
             }
             try? session.setActive(true)
+            
+            Logger.shared.log("Audio session restored to: \(savedCategory)", category: .audio, level: .debug)
         }
     }
     
@@ -164,7 +186,7 @@ final class PCMStreamingService: ObservableObject {
         self.engine = engine
         self.playerNode = playerNode
         
-        print("✅ PCM engine ready (24kHz → \(Int(outputFormat.sampleRate))Hz)")
+        Logger.shared.log("✅ PCM engine ready (24kHz → \(Int(outputFormat.sampleRate))Hz)", category: .tts)
     }
     
     private func streamFromElevenLabs(_ text: String) async throws {
@@ -173,6 +195,7 @@ final class PCMStreamingService: ObservableObject {
         scheduledBufferCount = 0
         
         let url = URL(string: "\(baseURL)/\(cfg.elevenLabsVoiceId)/stream?output_format=pcm_24000")!
+        Logger.shared.log("🎤 Using voice ID: \(cfg.elevenLabsVoiceId)", category: .tts, level: .debug)
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -195,6 +218,7 @@ final class PCMStreamingService: ObservableObject {
         let startTime = Date()
         isGenerating = true  // Start as true until we get first chunk
         
+        Logger.shared.startTimer("ElevenLabs_API_Request")
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         
         guard let httpResponse = response as? HTTPURLResponse,
@@ -202,27 +226,48 @@ final class PCMStreamingService: ObservableObject {
             throw StreamingError.badResponse
         }
         
+        Logger.shared.log("ElevenLabs response: \(httpResponse.statusCode)", category: .network, level: .debug)
+        
+        guard httpResponse.statusCode == 200 else {
+            Logger.shared.log("❌ ElevenLabs API error: \(httpResponse.statusCode)", category: .network, level: .error)
+            throw StreamingError.badResponse
+        }
+        
         var buffer = Data()
         var firstChunkReceived = false
         let chunkSize = Int(sampleRate * chunkDuration) * 2 // 2 bytes per sample
+        var totalBytes = 0
+        var chunkCount = 0
         
         for try await byte in bytes {
-            guard !Task.isCancelled else { break }
+            guard !Task.isCancelled else {
+                Logger.shared.log("Stream cancelled", category: .tts, level: .warning)
+                break
+            }
             
             buffer.append(byte)
+            totalBytes += 1
             
             if buffer.count >= chunkSize {
                 if !firstChunkReceived {
                     firstChunkReceived = true
                     let latency = Date().timeIntervalSince(startTime)
-                    print("⚡ First audio in \(Int(latency * 1000))ms")
+                    Logger.shared.endTimer("ElevenLabs_API_Request")
+                    Logger.shared.log("⚡ First audio in \(Int(latency * 1000))ms", category: .tts)
                     isGenerating = false
                     isSpeaking = true
                 }
                 
+                chunkCount += 1
                 let chunk = buffer.prefix(chunkSize)
                 processAudioChunk(Data(chunk))
                 buffer.removeFirst(chunkSize)
+                
+                // Log progress every 100 chunks (5 seconds of audio)
+                if chunkCount % 100 == 0 {
+                    Logger.shared.log("Streaming progress: \(chunkCount / 20)s elapsed, \(totalBytes / 1000)KB received",
+                                     category: .tts, level: .debug)
+                }
             }
         }
         
@@ -233,7 +278,7 @@ final class PCMStreamingService: ObservableObject {
         
         // Mark streaming as complete
         isStreamingComplete = true
-        print("📊 Streaming complete - \(scheduledBufferCount) buffers pending playback")
+        Logger.shared.log("📊 Streaming complete - \(scheduledBufferCount) buffers pending playback", category: .tts)
         
         // If no buffers are scheduled (very short audio), signal completion immediately
         if scheduledBufferCount == 0 {
@@ -332,10 +377,12 @@ final class PCMStreamingService: ObservableObject {
         
         playerNode = nil
         engine = nil
+        
+        Logger.shared.log("Audio engine cleaned up", category: .audio, level: .debug)
     }
     
     private func signalPlaybackComplete() {
-        print("🎵 All audio buffers played - signaling completion")
+        Logger.shared.log("🎵 All audio buffers played - signaling completion", category: .tts)
         playbackCompletionContinuation?.resume()
         playbackCompletionContinuation = nil
     }
@@ -374,321 +421,321 @@ enum StreamingError: LocalizedError {
 extension PCMStreamingService {
     
     /// Debug version of streamSpeech with extensive logging
-    func streamSpeechDebug(_ text: String) async {
-        print("\n🎙️ ===== PCMStreamingService.streamSpeech() START =====")
-        print("📝 Text: \(text.prefix(50))...")
-        print("🔧 Config check:")
-        print("   - hasElevenLabs: \(cfg.hasElevenLabs)")
-        print("   - voiceId: \(cfg.elevenLabsVoiceId)")
-        print("   - apiKey: \(cfg.elevenLabsAPIKey.prefix(10))...")
-        
-        // Cancel any existing stream
-        stopSpeaking()
-        
-        guard cfg.hasElevenLabs else {
-            print("❌ ElevenLabs not configured")
-            return
-        }
-        
-        // Clean the text
-        let cleanedText = cleanText(text)
-        print("📝 Cleaned text: \(cleanedText.prefix(50))...")
-        guard !cleanedText.isEmpty else {
-            print("❌ Text is empty after cleaning")
-            return
-        }
-        
-        isGenerating = true
-        print("🔄 isGenerating = true")
-        
-        // Create a new task for this stream
-        currentTask = Task {
-            print("🚀 Starting streaming task...")
-            await performStreamingDebug(cleanedText)
-        }
-        
-        // Wait for completion
-        print("⏳ Waiting for task completion...")
-        await currentTask?.value
-        print("✅ Task completed")
-        print("🎙️ ===== PCMStreamingService.streamSpeech() END =====\n")
-    }
+//    func streamSpeechDebug(_ text: String) async {
+//        print("\n🎙️ ===== PCMStreamingService.streamSpeech() START =====")
+//        print("📝 Text: \(text.prefix(50))...")
+//        print("🔧 Config check:")
+//        print("   - hasElevenLabs: \(cfg.hasElevenLabs)")
+//        print("   - voiceId: \(cfg.elevenLabsVoiceId)")
+//        print("   - apiKey: \(cfg.elevenLabsAPIKey.prefix(10))...")
+//        
+//        // Cancel any existing stream
+//        stopSpeaking()
+//        
+//        guard cfg.hasElevenLabs else {
+//            print("❌ ElevenLabs not configured")
+//            return
+//        }
+//        
+//        // Clean the text
+//        let cleanedText = cleanText(text)
+//        print("📝 Cleaned text: \(cleanedText.prefix(50))...")
+//        guard !cleanedText.isEmpty else {
+//            print("❌ Text is empty after cleaning")
+//            return
+//        }
+//        
+//        isGenerating = true
+//        print("🔄 isGenerating = true")
+//        
+//        // Create a new task for this stream
+//        currentTask = Task {
+//            print("🚀 Starting streaming task...")
+//            await performStreamingDebug(cleanedText)
+//        }
+//        
+//        // Wait for completion
+//        print("⏳ Waiting for task completion...")
+//        await currentTask?.value
+//        print("✅ Task completed")
+//        print("🎙️ ===== PCMStreamingService.streamSpeech() END =====\n")
+//    }
     
-    private func performStreamingDebug(_ text: String) async {
-        print("\n📡 ===== performStreaming() START =====")
-        
-        do {
-            // Setup audio session
-            print("🔊 Setting up audio session...")
-            try await setupAudioSessionDebug()
-            
-            // Setup audio engine
-            print("🎚️ Setting up audio engine...")
-            try await setupAudioEngineDebug()
-            
-            // Start the stream
-            print("🌊 Starting stream from ElevenLabs...")
-            try await streamFromElevenLabsDebug(text)
-            
-            // Wait for playback to complete
-            print("⏸️ Waiting for playback to complete...")
-            try await Task.sleep(nanoseconds: 500_000_000) // 0.5s buffer
-            
-        } catch {
-            print("❌ Streaming error: \(error)")
-            print("📋 Error details: \(error.localizedDescription)")
-        }
-        
-        // Cleanup
-        print("🧹 Cleaning up...")
-        await restoreAudioSession()
-        cleanupAudio()
-        
-        isSpeaking = false
-        isGenerating = false
-        print("📡 ===== performStreaming() END =====\n")
-    }
+//    private func performStreamingDebug(_ text: String) async {
+//        print("\n📡 ===== performStreaming() START =====")
+//        
+//        do {
+//            // Setup audio session
+//            print("🔊 Setting up audio session...")
+//            try await setupAudioSessionDebug()
+//            
+//            // Setup audio engine
+//            print("🎚️ Setting up audio engine...")
+//            try await setupAudioEngineDebug()
+//            
+//            // Start the stream
+//            print("🌊 Starting stream from ElevenLabs...")
+//            try await streamFromElevenLabsDebug(text)
+//            
+//            // Wait for playback to complete
+//            print("⏸️ Waiting for playback to complete...")
+//            try await Task.sleep(nanoseconds: 500_000_000) // 0.5s buffer
+//            
+//        } catch {
+//            print("❌ Streaming error: \(error)")
+//            print("📋 Error details: \(error.localizedDescription)")
+//        }
+//        
+//        // Cleanup
+//        print("🧹 Cleaning up...")
+//        await restoreAudioSession()
+//        cleanupAudio()
+//        
+//        isSpeaking = false
+//        isGenerating = false
+//        print("📡 ===== performStreaming() END =====\n")
+//    }
     
-    private func setupAudioSessionDebug() async throws {
-        print("\n🔊 ===== setupAudioSession() =====")
-        let session = AVAudioSession.sharedInstance()
-        
-        // Log current state
-        print("📊 Current audio session:")
-        print("   - Category: \(session.category.rawValue)")
-        print("   - Mode: \(session.mode.rawValue)")
-        print("   - Is active: \(session.isOtherAudioPlaying)")
-        
-        // Store current state
-        UserDefaults.standard.set(session.category.rawValue, forKey: "saved_audio_category")
-        UserDefaults.standard.set(session.mode.rawValue, forKey: "saved_audio_mode")
-        print("💾 Saved current audio state")
-        
-        // Configure for playback
-        print("🔧 Deactivating current session...")
-        try session.setActive(false, options: .notifyOthersOnDeactivation)
-        try await Task.sleep(nanoseconds: 100_000_000) // 100ms
-        
-        print("🔧 Setting category to playback...")
-        try session.setCategory(.playback, mode: .default, options: [])
-        
-        print("🔧 Activating session...")
-        try session.setActive(true)
-        
-        print("✅ Audio session configured:")
-        print("   - Category: \(session.category.rawValue)")
-        print("   - Mode: \(session.mode.rawValue)")
-        print("   - Sample rate: \(session.sampleRate)")
-        print("   - Buffer duration: \(session.ioBufferDuration)")
-    }
+//    private func setupAudioSessionDebug() async throws {
+//        print("\n🔊 ===== setupAudioSession() =====")
+//        let session = AVAudioSession.sharedInstance()
+//        
+//        // Log current state
+//        print("📊 Current audio session:")
+//        print("   - Category: \(session.category.rawValue)")
+//        print("   - Mode: \(session.mode.rawValue)")
+//        print("   - Is active: \(session.isOtherAudioPlaying)")
+//        
+//        // Store current state
+//        UserDefaults.standard.set(session.category.rawValue, forKey: "saved_audio_category")
+//        UserDefaults.standard.set(session.mode.rawValue, forKey: "saved_audio_mode")
+//        print("💾 Saved current audio state")
+//        
+//        // Configure for playback
+//        print("🔧 Deactivating current session...")
+//        try session.setActive(false, options: .notifyOthersOnDeactivation)
+//        try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+//        
+//        print("🔧 Setting category to playback...")
+//        try session.setCategory(.playback, mode: .default, options: [])
+//        
+//        print("🔧 Activating session...")
+//        try session.setActive(true)
+//        
+//        print("✅ Audio session configured:")
+//        print("   - Category: \(session.category.rawValue)")
+//        print("   - Mode: \(session.mode.rawValue)")
+//        print("   - Sample rate: \(session.sampleRate)")
+//        print("   - Buffer duration: \(session.ioBufferDuration)")
+//    }
     
-    private func setupAudioEngineDebug() async throws {
-        print("\n🎚️ ===== setupAudioEngine() =====")
-        
-        let engine = AVAudioEngine()
-        let playerNode = AVAudioPlayerNode()
-        
-        print("📊 Creating audio engine...")
-        print("   - Engine: \(engine)")
-        print("   - Player node: \(playerNode)")
-        
-        engine.attach(playerNode)
-        print("✅ Player node attached")
-        
-        // Create format - using hardware rate for compatibility
-        let outputFormat = engine.outputNode.inputFormat(forBus: 0)
-        print("📊 Output format:")
-        print("   - Sample rate: \(outputFormat.sampleRate)")
-        print("   - Channels: \(outputFormat.channelCount)")
-        print("   - Common format: \(outputFormat.commonFormat.rawValue)")
-        
-        let nodeFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                     sampleRate: outputFormat.sampleRate,
-                                     channels: 1,
-                                     interleaved: false)!
-        print("📊 Node format:")
-        print("   - Sample rate: \(nodeFormat.sampleRate)")
-        print("   - Channels: \(nodeFormat.channelCount)")
-        
-        engine.connect(playerNode, to: engine.outputNode, format: nodeFormat)
-        print("✅ Nodes connected")
-        
-        print("🚀 Starting engine...")
-        try engine.start()
-        print("✅ Engine started")
-        
-        print("▶️ Starting player node...")
-        playerNode.play()
-        print("✅ Player node playing")
-        
-        self.engine = engine
-        self.playerNode = playerNode
-        
-        print("✅ PCM engine ready (24kHz → \(Int(outputFormat.sampleRate))Hz)")
-    }
+//    private func setupAudioEngineDebug() async throws {
+//        print("\n🎚️ ===== setupAudioEngine() =====")
+//        
+//        let engine = AVAudioEngine()
+//        let playerNode = AVAudioPlayerNode()
+//        
+//        print("📊 Creating audio engine...")
+//        print("   - Engine: \(engine)")
+//        print("   - Player node: \(playerNode)")
+//        
+//        engine.attach(playerNode)
+//        print("✅ Player node attached")
+//        
+//        // Create format - using hardware rate for compatibility
+//        let outputFormat = engine.outputNode.inputFormat(forBus: 0)
+//        print("📊 Output format:")
+//        print("   - Sample rate: \(outputFormat.sampleRate)")
+//        print("   - Channels: \(outputFormat.channelCount)")
+//        print("   - Common format: \(outputFormat.commonFormat.rawValue)")
+//        
+//        let nodeFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+//                                     sampleRate: outputFormat.sampleRate,
+//                                     channels: 1,
+//                                     interleaved: false)!
+//        print("📊 Node format:")
+//        print("   - Sample rate: \(nodeFormat.sampleRate)")
+//        print("   - Channels: \(nodeFormat.channelCount)")
+//        
+//        engine.connect(playerNode, to: engine.outputNode, format: nodeFormat)
+//        print("✅ Nodes connected")
+//        
+//        print("🚀 Starting engine...")
+//        try engine.start()
+//        print("✅ Engine started")
+//        
+//        print("▶️ Starting player node...")
+//        playerNode.play()
+//        print("✅ Player node playing")
+//        
+//        self.engine = engine
+//        self.playerNode = playerNode
+//        
+//        print("✅ PCM engine ready (24kHz → \(Int(outputFormat.sampleRate))Hz)")
+//    }
     
-    private func streamFromElevenLabsDebug(_ text: String) async throws {
-        print("\n🌊 ===== streamFromElevenLabs() =====")
-        
-        let url = URL(string: "\(baseURL)/\(cfg.elevenLabsVoiceId)/stream?output_format=pcm_24000")!
-        print("🌐 URL: \(url)")
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue(cfg.elevenLabsAPIKey, forHTTPHeaderField: "xi-api-key")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let body: [String: Any] = [
-            "text": text,
-            "model_id": "eleven_turbo_v2_5",
-            "optimize_streaming_latency": cfg.elevenLabsLatencyMode,
-            "voice_settings": [
-                "stability": 0.6,
-                "similarity_boost": 0.8,
-                "style": 0.2,
-                "use_speaker_boost": true
-            ]
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        print("📋 Request body: \(body)")
-        
-        let startTime = Date()
-        isGenerating = false  // Will be false once we receive first chunk
-        
-        print("🚀 Starting URLSession.bytes request...")
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            print("❌ Response is not HTTPURLResponse")
-            throw StreamingError.badResponse
-        }
-        
-        print("📡 Response received:")
-        print("   - Status code: \(httpResponse.statusCode)")
-        print("   - Headers: \(httpResponse.allHeaderFields)")
-        
-        guard httpResponse.statusCode == 200 else {
-            print("❌ Bad status code: \(httpResponse.statusCode)")
-            await handleElevenLabsError(httpResponse, bytes: bytes)
-            throw StreamingError.badResponse
-        }
-        
-        var buffer = Data()
-        var firstChunkReceived = false
-        let chunkSize = Int(sampleRate * chunkDuration) * 2 // 2 bytes per sample
-        print("📦 Chunk size: \(chunkSize) bytes")
-        
-        var totalBytes = 0
-        var chunkCount = 0
-        
-        print("🌊 Starting to receive bytes...")
-        for try await byte in bytes {
-            guard !Task.isCancelled else {
-                print("⛔ Task cancelled")
-                break
-            }
-            
-            buffer.append(byte)
-            totalBytes += 1
-            
-            if buffer.count >= chunkSize {
-                if !firstChunkReceived {
-                    firstChunkReceived = true
-                    let latency = Date().timeIntervalSince(startTime)
-                    print("⚡ First audio chunk in \(Int(latency * 1000))ms")
-                    isGenerating = false
-                    isSpeaking = true
-                }
-                
-                chunkCount += 1
-                let chunk = buffer.prefix(chunkSize)
-                print("🔊 Processing chunk #\(chunkCount) (\(chunk.count) bytes)")
-                processAudioChunkDebug(Data(chunk))
-                buffer.removeFirst(chunkSize)
-            }
-        }
-        
-        print("🏁 Stream ended:")
-        print("   - Total bytes: \(totalBytes)")
-        print("   - Chunks processed: \(chunkCount)")
-        print("   - Buffer remaining: \(buffer.count) bytes")
-        
-        // Process remaining data
-        if !buffer.isEmpty && !Task.isCancelled {
-            print("🔊 Processing final chunk (\(buffer.count) bytes)")
-            processAudioChunkDebug(buffer)
-        }
-    }
+//    private func streamFromElevenLabsDebug(_ text: String) async throws {
+//        print("\n🌊 ===== streamFromElevenLabs() =====")
+//        
+//        let url = URL(string: "\(baseURL)/\(cfg.elevenLabsVoiceId)/stream?output_format=pcm_24000")!
+//        print("🌐 URL: \(url)")
+//        
+//        var request = URLRequest(url: url)
+//        request.httpMethod = "POST"
+//        request.setValue(cfg.elevenLabsAPIKey, forHTTPHeaderField: "xi-api-key")
+//        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+//        
+//        let body: [String: Any] = [
+//            "text": text,
+//            "model_id": "eleven_turbo_v2_5",
+//            "optimize_streaming_latency": cfg.elevenLabsLatencyMode,
+//            "voice_settings": [
+//                "stability": 0.6,
+//                "similarity_boost": 0.8,
+//                "style": 0.2,
+//                "use_speaker_boost": true
+//            ]
+//        ]
+//        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+//        print("📋 Request body: \(body)")
+//        
+//        let startTime = Date()
+//        isGenerating = false  // Will be false once we receive first chunk
+//        
+//        print("🚀 Starting URLSession.bytes request...")
+//        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+//        
+//        guard let httpResponse = response as? HTTPURLResponse else {
+//            print("❌ Response is not HTTPURLResponse")
+//            throw StreamingError.badResponse
+//        }
+//        
+//        print("📡 Response received:")
+//        print("   - Status code: \(httpResponse.statusCode)")
+//        print("   - Headers: \(httpResponse.allHeaderFields)")
+//        
+//        guard httpResponse.statusCode == 200 else {
+//            print("❌ Bad status code: \(httpResponse.statusCode)")
+//            await handleElevenLabsError(httpResponse, bytes: bytes)
+//            throw StreamingError.badResponse
+//        }
+//        
+//        var buffer = Data()
+//        var firstChunkReceived = false
+//        let chunkSize = Int(sampleRate * chunkDuration) * 2 // 2 bytes per sample
+//        print("📦 Chunk size: \(chunkSize) bytes")
+//        
+//        var totalBytes = 0
+//        var chunkCount = 0
+//        
+//        print("🌊 Starting to receive bytes...")
+//        for try await byte in bytes {
+//            guard !Task.isCancelled else {
+//                print("⛔ Task cancelled")
+//                break
+//            }
+//            
+//            buffer.append(byte)
+//            totalBytes += 1
+//            
+//            if buffer.count >= chunkSize {
+//                if !firstChunkReceived {
+//                    firstChunkReceived = true
+//                    let latency = Date().timeIntervalSince(startTime)
+//                    print("⚡ First audio chunk in \(Int(latency * 1000))ms")
+//                    isGenerating = false
+//                    isSpeaking = true
+//                }
+//                
+//                chunkCount += 1
+//                let chunk = buffer.prefix(chunkSize)
+//                print("🔊 Processing chunk #\(chunkCount) (\(chunk.count) bytes)")
+//                processAudioChunkDebug(Data(chunk))
+//                buffer.removeFirst(chunkSize)
+//            }
+//        }
+//        
+//        print("🏁 Stream ended:")
+//        print("   - Total bytes: \(totalBytes)")
+//        print("   - Chunks processed: \(chunkCount)")
+//        print("   - Buffer remaining: \(buffer.count) bytes")
+//        
+//        // Process remaining data
+//        if !buffer.isEmpty && !Task.isCancelled {
+//            print("🔊 Processing final chunk (\(buffer.count) bytes)")
+//            processAudioChunkDebug(buffer)
+//        }
+//    }
     
-    private func processAudioChunkDebug(_ data: Data) {
-        print("  🎵 processAudioChunk: \(data.count) bytes")
-        
-        guard let playerNode = playerNode,
-              let engine = engine,
-              !Task.isCancelled else {
-            print("  ❌ Missing playerNode/engine or task cancelled")
-            return
-        }
-        
-        print("  ✅ Player node is playing: \(playerNode.isPlaying)")
-        print("  ✅ Engine is running: \(engine.isRunning)")
-        
-        // Call the original processing method
-        processAudioChunk(data)
-        print("  ✅ Chunk scheduled to player")
-    }
+//    private func processAudioChunkDebug(_ data: Data) {
+//        print("  🎵 processAudioChunk: \(data.count) bytes")
+//        
+//        guard let playerNode = playerNode,
+//              let engine = engine,
+//              !Task.isCancelled else {
+//            print("  ❌ Missing playerNode/engine or task cancelled")
+//            return
+//        }
+//        
+//        print("  ✅ Player node is playing: \(playerNode.isPlaying)")
+//        print("  ✅ Engine is running: \(engine.isRunning)")
+//        
+//        // Call the original processing method
+//        processAudioChunk(data)
+//        print("  ✅ Chunk scheduled to player")
+//    }
     
-    private func handleElevenLabsError(_ httpResponse: HTTPURLResponse, bytes: URLSession.AsyncBytes) async {
-        print("❌ ElevenLabs API returned status: \(httpResponse.statusCode)")
-        
-        switch httpResponse.statusCode {
-        case 401:
-            print("🔑 Check your ElevenLabs API key in Config.plist")
-            
-        case 422:
-            print("⚠️ Invalid request - check voice ID: \(cfg.elevenLabsVoiceId)")
-            
-        case 429:
-            print("⏳ Rate limited - too many requests")
-            print("📋 Rate limit headers:")
-            for (key, value) in httpResponse.allHeaderFields {
-                if let headerKey = key as? String,
-                   headerKey.lowercased().contains("ratelimit") || headerKey.lowercased().contains("rate-limit") {
-                    print("   - \(headerKey): \(value)")
-                }
-            }
-            
-        case 500:
-            print("🔥 ElevenLabs server error - temporary issue")
-            
-        default:
-            print("🤷 Unexpected status code")
-        }
-        
-        // Try to read error body for all error types
-        var errorData = Data()
-        do {
-            for try await byte in bytes {
-                errorData.append(byte)
-                if errorData.count > 1000 { break }
-            }
-            
-            if let errorString = String(data: errorData, encoding: .utf8) {
-                print("📋 Error response: \(errorString)")
-            }
-            
-            if let errorJson = try? JSONSerialization.jsonObject(with: errorData) as? [String: Any] {
-                print("📋 Error JSON: \(errorJson)")
-                
-                if let detail = errorJson["detail"] {
-                    print("   - Detail: \(detail)")
-                }
-                if let message = errorJson["message"] as? String {
-                    print("   - Message: \(message)")
-                }
-            }
-        } catch {
-            print("⚠️ Could not read error response body")
-        }
-    }
+//    private func handleElevenLabsError(_ httpResponse: HTTPURLResponse, bytes: URLSession.AsyncBytes) async {
+//        print("❌ ElevenLabs API returned status: \(httpResponse.statusCode)")
+//        
+//        switch httpResponse.statusCode {
+//        case 401:
+//            print("🔑 Check your ElevenLabs API key in Config.plist")
+//            
+//        case 422:
+//            print("⚠️ Invalid request - check voice ID: \(cfg.elevenLabsVoiceId)")
+//            
+//        case 429:
+//            print("⏳ Rate limited - too many requests")
+//            print("📋 Rate limit headers:")
+//            for (key, value) in httpResponse.allHeaderFields {
+//                if let headerKey = key as? String,
+//                   headerKey.lowercased().contains("ratelimit") || headerKey.lowercased().contains("rate-limit") {
+//                    print("   - \(headerKey): \(value)")
+//                }
+//            }
+//            
+//        case 500:
+//            print("🔥 ElevenLabs server error - temporary issue")
+//            
+//        default:
+//            print("🤷 Unexpected status code")
+//        }
+//        
+//        // Try to read error body for all error types
+//        var errorData = Data()
+//        do {
+//            for try await byte in bytes {
+//                errorData.append(byte)
+//                if errorData.count > 1000 { break }
+//            }
+//            
+//            if let errorString = String(data: errorData, encoding: .utf8) {
+//                print("📋 Error response: \(errorString)")
+//            }
+//            
+//            if let errorJson = try? JSONSerialization.jsonObject(with: errorData) as? [String: Any] {
+//                print("📋 Error JSON: \(errorJson)")
+//                
+//                if let detail = errorJson["detail"] {
+//                    print("   - Detail: \(detail)")
+//                }
+//                if let message = errorJson["message"] as? String {
+//                    print("   - Message: \(message)")
+//                }
+//            }
+//        } catch {
+//            print("⚠️ Could not read error response body")
+//        }
+//    }
 }
