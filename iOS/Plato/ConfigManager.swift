@@ -159,7 +159,7 @@ struct ConfigManager {
     
     var elevenLabsVoiceId: String {
         let id = string(ConfigKeys.elevenLabsVoiceId) ?? "54iwHRhRaUH4syXwhP7D"
-        print("🎤 Using voice ID: \(id)")  // Add this line
+//        print("🎤 Using voice ID: \(id)")  // Add this line
         return id;
     }
     

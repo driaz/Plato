@@ -34,7 +34,7 @@ final class AudioCoordinator {
         }
         
         currentMode = .speechRecognition
-        print("🎤 Audio mode: Speech Recognition")
+        Logger.shared.log("Audio mode: Speech Recognition", category: .state, level: .info)
     }
     
     /// Request to switch to text-to-speech mode
@@ -50,12 +50,14 @@ final class AudioCoordinator {
         
         // Don't change the audio session here - let the player handle it
         currentMode = .textToSpeech
-        print("🔊 Audio mode: Text to Speech")
+        Logger.shared.log("Audio mode: Text to Speech", category: .state, level: .info)
     }
+    
     /// Release current mode
     func releaseCurrentMode() {
         let previousMode = currentMode
         currentMode = .idle
+        Logger.shared.log("Audio mode: Idle (was \(previousMode))", category: .state, level: .info)
         
         // Don't change the audio session - keep it in a stable state
     }

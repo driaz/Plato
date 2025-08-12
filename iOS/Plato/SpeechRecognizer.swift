@@ -60,6 +60,10 @@ class SpeechRecognizer: ObservableObject {
     var onAutoUpload: ((String) -> Void)?
     var onInterruption: (() -> Void)?
     
+    // Flow tracking
+    private var currentRecognitionFlow: UUID?
+    private var currentTurnFlow: UUID?
+    
     // IMPORTANT: Add reference to check TTS state
     private weak var elevenLabsService: ElevenLabsService? {
         // Simply return the static reference from ContentView
@@ -68,14 +72,7 @@ class SpeechRecognizer: ObservableObject {
     
     init() {
         speechRecognizer?.defaultTaskHint = .dictation
-        
-        // DEBUG: See what values are actually being used
-        print("🎙️ Speech Recognition Timings:")
-        print("   - Silence threshold: \(cfg.speechSilenceThreshold)s")
-        print("   - Stability window: \(cfg.speechStabilityWindow)s")
-        print("   - Post-playback grace: \(cfg.speechPostPlaybackGrace)s")
-        print("   - VAD threshold: \(String(describing: cfg.vadEnergyFloorDb)) dB")
-        
+        Logger.shared.log("SpeechRecognizer initialized", category: .speech, level: .info)
         requestPermission()
     }
     
@@ -83,6 +80,8 @@ class SpeechRecognizer: ObservableObject {
     
     func requestPermission() {
         Task { @MainActor in
+            Logger.shared.log("Requesting audio permissions", category: .speech, level: .info)
+
             // ------- Microphone permission -------
             let micGranted: Bool
             if #available(iOS 17.0, *) {
@@ -97,7 +96,7 @@ class SpeechRecognizer: ObservableObject {
 
             guard micGranted else {
                 self.isAuthorized = false
-                print("❌ Microphone permission denied")
+                Logger.shared.log("Microphone permission denied", category: .speech, level: .error)
                 return
             }
 
@@ -109,8 +108,14 @@ class SpeechRecognizer: ObservableObject {
             }
 
             self.isAuthorized = (speechAuth == .authorized)
-            print(self.isAuthorized ? "✅ Speech recognition authorized"
-                                    : "❌ Speech recognition not authorized: \(speechAuth.rawValue)")
+            
+            if self.isAuthorized {
+                            Logger.shared.log("Speech recognition authorized", category: .speech, level: .info)
+                        } else {
+                            Logger.shared.log("Speech recognition not authorized: \(speechAuth.rawValue)",
+                                             category: .speech, level: .error)
+                        }
+            
         }
     }
     
@@ -118,15 +123,19 @@ class SpeechRecognizer: ObservableObject {
     
     func startAlwaysListening() {
         guard isAuthorized else {
-            print("Speech recognition not authorized for always-on listening")
+            Logger.shared.log("Cannot start always-listening: not authorized", category: .speech, level: .warning)
             return
         }
+        
+        Logger.shared.log("Starting always-listening mode", category: .speech, level: .info)
         isAlwaysListening = true
         isPaused = false
         startRecording()
     }
     
     func stopAlwaysListening() {
+        Logger.shared.log("Stopping always-listening mode", category: .speech, level: .info)
+
         isAlwaysListening = false
         isPaused = false
         restartTimer?.invalidate()
@@ -134,21 +143,25 @@ class SpeechRecognizer: ObservableObject {
         stopRecording()
     }
     
-    func pauseListening(aiResponse _: String = "") {
+    func pauseListening(aiResponse: String = "") {
         guard isAlwaysListening else { return }
         isPaused = true
-        print("🔇 SpeechRecognizer paused (AI speaking).")
+        if !aiResponse.isEmpty {
+            Logger.shared.log("STT paused (AI speaking): \(aiResponse.prefix(50))...", category: .speech, level: .debug)
+        } else {
+            Logger.shared.log("STT paused for AI speech", category: .speech, level: .debug)
+        }
     }
     
     func resumeListening() {
         guard isAlwaysListening else { return }
         isPaused = false
         resetTurnState(clearTranscript: true)
-        print("🎙️ SpeechRecognizer resumed.")
-        
+        Logger.shared.log("STT resumed after AI speech", category: .speech, level: .debug)
+
         // IMPORTANT: Actually restart recording if not already recording
         if !isRecording {
-            print("🎤 Starting recording in resumeListening")
+            Logger.shared.log("Starting recording in resumeListening", category: .speech, level: .debug)
             startRecording()
         }
     }
@@ -157,13 +170,18 @@ class SpeechRecognizer: ObservableObject {
     
     func startRecording() {
         guard isAuthorized else {
-            print("Speech recognition not authorized")
+            Logger.shared.log("Cannot start recording: not authorized", category: .speech, level: .warning)
             return
         }
+        
         guard let speechRecognizer, speechRecognizer.isAvailable else {
-            print("Speech recognizer not available")
+            Logger.shared.log("Speech recognizer not available", category: .speech, level: .error)
             return
         }
+        
+        // Start recognition flow
+        currentRecognitionFlow = Logger.shared.startFlow("speech_recognition")
+        Logger.shared.startTimer("stt_session")
         
         // Cancel prior
         recognitionTask?.cancel()
@@ -172,8 +190,12 @@ class SpeechRecognizer: ObservableObject {
         // Request speech recognition mode
         do {
             try AudioCoordinator.shared.requestSpeechRecognitionMode()
+            Logger.shared.log("Audio coordinator: speech mode acquired", category: .audio, level: .debug)
         } catch {
-            print("❌ Failed to request speech recognition mode: \(error)")
+            Logger.shared.log("Failed to request speech recognition mode: \(error)", category: .speech, level: .error)
+            if let flowId = currentRecognitionFlow {
+                Logger.shared.endFlow(flowId, name: "speech_recognition")
+            }
             return
         }
         
@@ -189,6 +211,7 @@ class SpeechRecognizer: ObservableObject {
         if #available(iOS 16.0, *) {
             req.addsPunctuation = true
             req.contextualStrings = contextualHints
+            Logger.shared.log("Added \(contextualHints.count) contextual hints", category: .speech, level: .debug)
         }
         
         // Recognize
@@ -210,6 +233,8 @@ class SpeechRecognizer: ObservableObject {
         inputNode.removeTap(onBus: 0)
         let format = inputNode.outputFormat(forBus: 0)
         
+        Logger.shared.log("Audio format: \(format.sampleRate)Hz, \(format.channelCount)ch", category: .audio, level: .debug)
+        
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
             self?.recognitionRequest?.append(buf)
         }
@@ -219,15 +244,28 @@ class SpeechRecognizer: ObservableObject {
             try audioEngine.start()
             isRecording = true
             resetTurnState(clearTranscript: true)
-            print("🎙️ Speech recognition started")
+            Logger.shared.log("Speech recognition started successfully", category: .speech, level: .info)
         } catch {
-            print("Failed to start audio engine: \(error)")
+            Logger.shared.log("Failed to start audio engine: \(error)", category: .speech, level: .error)
             AudioCoordinator.shared.releaseCurrentMode()
+            
+            if let flowId = currentRecognitionFlow {
+            Logger.shared.endFlow(flowId, name: "speech_recognition")
+            }
             stopRecording()
         }
     }
     
     func stopRecording() {
+        Logger.shared.log("Stopping recording", category: .speech, level: .info)
+
+        // End timers
+        if let flowId = currentRecognitionFlow {
+            Logger.shared.endFlow(flowId, name: "speech_recognition")
+            currentRecognitionFlow = nil
+        }
+        Logger.shared.endTimer("stt_session")
+        
         silenceTimer?.invalidate()
         silenceTimer = nil
         
@@ -237,10 +275,10 @@ class SpeechRecognizer: ObservableObject {
         if audioEngine.isRunning {
             audioEngine.stop()
             audioEngine.inputNode.removeTap(onBus: 0)
+            Logger.shared.log("Audio engine stopped", category: .audio, level: .debug)
         }
         
         recognitionRequest = nil
-        
         recognitionTask?.cancel()
         recognitionTask = nil
         
@@ -251,7 +289,11 @@ class SpeechRecognizer: ObservableObject {
         hasContent = false
         
         // Clear transcript to prevent echo
+        let clearedText = transcript
         transcript = ""
+        if !clearedText.isEmpty {
+            Logger.shared.log("Cleared transcript: '\(clearedText.prefix(30))...'", category: .echo, level: .debug)
+        }
         
         // IMPORTANT: Give the audio session time to release
         Task {
@@ -264,16 +306,31 @@ class SpeechRecognizer: ObservableObject {
     private func handleRecognition(result: SFSpeechRecognitionResult) {
         let transcription = result.bestTranscription.formattedString
         let corrected = correctCommonMistakes(transcription)
+        
+        let oldTranscript = transcript
         transcript = corrected
+        
+//        if oldTranscript != corrected {
+//            let diff = corrected.count - oldTranscript.count
+//            if abs(diff) > 3 || result.isFinal {  // Log if 3+ char change or final
+//                Logger.shared.log("Transcript: '\(corrected.suffix(50))'", category: .speech, level: .debug)
+//            }
+//        }
+        
         
         lastTranscriptUpdate = Date()
         hasContent = !corrected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        autoUploadTimer()
+        
+        if hasContent {
+            autoUploadTimer()  // Reset silence timer
+        }
         
         // EARLY TRIGGER when partial is stable & not paused
         if !result.isFinal, hasContent, !llmTriggered, !isPaused {
-            if corrected == lastPartialText,
-               Date().timeIntervalSince(lastPartialTime) > stabilityWindow {
+            let timeSinceLastPartial = Date().timeIntervalSince(lastPartialTime)
+
+            if corrected == lastPartialText && timeSinceLastPartial > stabilityWindow {
+                Logger.shared.log("Early trigger: stable for \(Int(timeSinceLastPartial * 1000))ms", category: .speech, level: .info)
                 llmTriggered = true
                 fireTurn(text: corrected)
             } else {
@@ -282,43 +339,27 @@ class SpeechRecognizer: ObservableObject {
             }
         }
         
-        // FINAL trigger backup
-        if result.isFinal, hasContent, !llmTriggered, !isPaused {
-            llmTriggered = true
-            fireTurn(text: corrected)
+        // Final trigger
+        if result.isFinal {
+            Logger.shared.log("Recognition final: '\(corrected.prefix(50))...'", category: .speech, level: .info)
+            
+            if hasContent && !llmTriggered && !isPaused {
+                llmTriggered = true
+                fireTurn(text: corrected)
+            }
         }
     }
     
     private func handleRecognitionError(_ error: Error) {
         let nsError = error as NSError
         
-        // SUPPRESS SPAMMY 1101 ERRORS - COMPLETELY SILENT
-        if nsError.code == 1101 {
-            // Just return immediately - no logging, no processing
-            return
-        }
-        
-        // LIMIT OTHER REPEATED ERRORS
-        if nsError.code == lastErrorCode && nsError.code != 1110 { // Don't limit 1110
-            consecutiveErrorCount += 1
-            if consecutiveErrorCount > 3 {
-                if consecutiveErrorCount == 4 {
-                    print("❌ Suppressing further '\(error.localizedDescription)' errors...")
-                }
-                return
-            }
-        } else {
-            lastErrorCode = nsError.code
-            consecutiveErrorCount = 1
-        }
-        
-        // Check if it's a "No speech detected" error BEFORE logging
+        // Check for "No speech detected" error
         if nsError.domain == "kAFAssistantErrorDomain" && nsError.code == 1110 {
+            Logger.shared.log("No speech detected - will restart if in always-listening", category: .speech, level: .info)
             stopRecording()
             
-            let isTTSSpeaking = ContentView.sharedElevenLabs?.isSpeaking ?? false
-            
-            if isAlwaysListening && !isPaused && !isTTSSpeaking {
+            // Restart if in always-listening mode
+            if isAlwaysListening && !isPaused {
                 restartTimer?.invalidate()
                 restartTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] _ in
                     Task { @MainActor in
@@ -326,18 +367,13 @@ class SpeechRecognizer: ObservableObject {
                               self.isAlwaysListening,
                               !self.isPaused,
                               !self.isRecording else { return }
-                        
-                        let stillNotSpeaking = ContentView.sharedElevenLabs?.isSpeaking != true
-                        if stillNotSpeaking {
-                            print("🔄 Restarting speech recognition")
-                            self.startRecording()
-                        }
+                        Logger.shared.log("Auto-restarting speech recognition", category: .speech, level: .info)
+                        self.startRecording()
                     }
                 }
             }
         } else {
-            // Only log non-1101, non-1110 errors
-            print("❌ Recognition error: \(error)")
+            Logger.shared.log("Recognition error: \(error)", category: .speech, level: .error)
             stopRecording()
         }
     }
@@ -373,17 +409,20 @@ class SpeechRecognizer: ObservableObject {
                 guard let self = self,
                       self.isAlwaysListening,
                       !self.isPaused,
-                      !self.isRecording else { return }
+                      !self.isRecording else {
+                    Logger.shared.log("Delayed restart skipped - conditions not met", category: .state, level: .debug)
+                    return
+                }
                 
                 // Check again if TTS is done
                 if let elevenLabs = ContentView.sharedElevenLabs,
                    (elevenLabs.isSpeaking || elevenLabs.isGenerating) {
-                    print("🔇 Still speaking, scheduling another check")
+                    Logger.shared.log("TTS still active, scheduling another check in 2s", category: .state, level: .debug)
                     self.scheduleDelayedRestart()
                     return
                 }
                 
-                print("🔄 TTS finished, restarting speech recognition")
+                Logger.shared.log("TTS finished, restarting speech recognition", category: .speech, level: .info)
                 self.startRecording()
             }
         }
@@ -393,32 +432,58 @@ class SpeechRecognizer: ObservableObject {
     private func autoUploadTimer() {
         silenceTimer?.invalidate()
         guard hasContent, isRecording, !isPaused else { return }
+        
+        // Don't log every timer reset - too noisy
+        // Logger.shared.log("Silence timer started (\(silenceThreshold)s)", category: .speech, level: .debug)
+        
         silenceTimer = Timer.scheduledTimer(withTimeInterval: silenceThreshold, repeats: false) { [weak self] _ in
             Task {@MainActor in
-                self?.fireTurn(text: self?.transcript ?? "")
+                guard let self = self else { return }
+                Logger.shared.log("Silence threshold reached - triggering turn", category: .speech, level: .info)
+
+                self.fireTurn(text: self.transcript)
             }
         }
     }
     
     private func fireTurn(text: String) {
-        guard !isPaused else { return }
+        guard !isPaused else {
+            Logger.shared.log("Turn skipped - STT is paused", category: .state, level: .debug)
+            return
+        }
+        
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else {
+            Logger.shared.log("Turn skipped - empty text", category: .speech, level: .debug)
+            return
+        }
+        
+        // Start turn flow
+        currentTurnFlow = Logger.shared.startFlow("user_turn")
+        Logger.shared.log("Firing turn: '\(trimmed.prefix(50))...' (\(trimmed.count) chars)", category: .speech, level: .info)
         
         isProcessing = true
         
         // Immediately stop recording to prevent double-capture
         if isAlwaysListening {
+            Logger.shared.log("Stopping recording for turn processing", category: .state, level: .debug)
             stopRecording()
         }
-        
+        // Trigger callback
         onAutoUpload?(trimmed)
+        
+        // End turn flow
+         if let flowId = currentTurnFlow {
+             Logger.shared.endFlow(flowId, name: "user_turn")
+             currentTurnFlow = nil
+         }
         
         // Don't restart immediately - let ContentView handle it after TTS
         isProcessing = false
     }
     
     private func resetTurnState(clearTranscript: Bool) {
+        Logger.shared.log("Resetting turn state (clear: \(clearTranscript))", category: .state, level: .debug)
         llmTriggered = false
         hasContent = false
         lastPartialText = ""
@@ -429,11 +494,18 @@ class SpeechRecognizer: ObservableObject {
     // MARK: Contextual hints
     private var contextualHints: [String] {
         [
+            // Core philosophers
             "Marcus Aurelius", "Epictetus", "Seneca",
+            
+            // Plato variants
             "Plato", "Play-Doh", "Playdoh", "Playto", "Plato's",
+            
+            // Philosophical vocabulary
             "Stoic", "Stoicism", "philosophy", "virtue", "resilience",
             "mindfulness", "temperance", "justice", "courage", "prudence",
             "inner peace", "present moment", "breathe deeply",
+            
+            // Common question stems
             "How do I", "What would", "How can I", "Guide me", "Teach me"
         ]
     }
@@ -441,71 +513,85 @@ class SpeechRecognizer: ObservableObject {
     // MARK: - Manual upload
     func manualUpload() {
         if hasContent {
+            Logger.shared.log("Manual upload triggered", category: .speech, level: .info)
             fireTurn(text: transcript)
+        } else {
+            Logger.shared.log("Manual upload skipped - no content", category: .speech, level: .debug)
         }
     }
     
     func stopForTTS() {
-        print("🛑 Force stopping speech recognizer for TTS")
-        
+        Logger.shared.log("Force stopping speech recognizer for TTS", category: .state, level: .info)
+
         // Cancel any pending restart timers
         restartTimer?.invalidate()
         restartTimer = nil
         
         // Stop recording if active
         if isRecording {
+            Logger.shared.log("Stopping active recording for TTS", category: .state, level: .debug)
             stopRecording()
         }
         
         // Mark as paused to prevent auto-restarts
         if isAlwaysListening {
             isPaused = true
+            Logger.shared.log("STT paused for TTS playback", category: .state, level: .debug)
         }
     }
     
     func notifyTTSComplete() {
         lastTTSEndTime = Date()
-        print("📢 TTS completed, setting grace period")
-        print("   - isAlwaysListening: \(isAlwaysListening)")
-        print("   - isRecording: \(isRecording)")
-        print("   - isPaused: \(isPaused)")
+        Logger.shared.log("TTS completed, setting grace period", category: .state, level: .info)
+        Logger.shared.log("State - always:\(isAlwaysListening) recording:\(isRecording) paused:\(isPaused)", category: .state, level: .debug)
+        
         
         // If somehow still recording, stop it first
         if isRecording {
-            print("   ⚠️ Still recording - stopping first")
+            Logger.shared.log("⚠️ Still recording after TTS - stopping first", category: .state, level: .warning)
             stopRecording()
         }
         
         // Resume listening if it was paused
         if isPaused {
-            print("   → Resuming from paused state")
+            Logger.shared.log("Resuming from paused state after TTS", category: .state, level: .info)
             resumeListening()
         } else if isAlwaysListening && !isRecording {
             // If we're in always-listening mode and not currently recording,
             // schedule a restart after a brief delay
-            print("   → Scheduling restart in 0.5s")
+            Logger.shared.log("Scheduling STT restart in 0.5s", category: .state, level: .debug)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 if self.isAlwaysListening && !self.isRecording && !self.isPaused {
-                    print("🎤 Resuming speech recognition after TTS")
+                    Logger.shared.log("Resuming speech recognition after TTS", category: .speech, level: .info)
                     self.startRecording()
                 } else {
-                    print("   ⚠️ Restart conditions not met after delay:")
-                    print("      - isAlwaysListening: \(self.isAlwaysListening)")
-                    print("      - isRecording: \(self.isRecording)")
-                    print("      - isPaused: \(self.isPaused)")
+                    Logger.shared.log("Restart conditions not met - always:\(self.isAlwaysListening) recording:\(self.isRecording) paused:\(self.isPaused)", category: .state, level: .warning)
                 }
             }
         } else {
-            print("   ⚠️ Not scheduling restart - conditions not met")
+            Logger.shared.log("Not scheduling restart - conditions not met", category: .state, level: .debug)
         }
     }
     // MARK: - Placeholder interruption API
-    func startInterruptionMonitoring(aiResponse _: String = "") {}
+    func startInterruptionMonitoring(aiResponse _: String = "") {
+        Logger.shared.log("Interruption monitoring not implemented", category: .speech, level: .debug)
+
+    }
+    
     func stopInterruptionMonitoring() {}
     
     // MARK: - Corrections
     private func correctCommonMistakes(_ text: String) -> String {
-        return text
+        // Keep your correction logic minimal for now
+        // Log only significant corrections
+        let corrected = text // Your actual correction logic here
+        
+        if corrected != text {
+            Logger.shared.log("Text corrected: '\(text)' -> '\(corrected)'",
+                             category: .speech, level: .debug)
+        }
+        
+        return corrected
     }
 }
 

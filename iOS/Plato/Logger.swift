@@ -89,6 +89,10 @@ final class Logger {
     private var minimumLevel: LogLevel = .debug
     private let dateFormatter: DateFormatter
     
+    // Change log ouput from debug to production
+    var useOSLog: Bool = false  // Set to true for production
+
+    
     // State tracking
     private var lastStateSnapshot: AppStateSnapshot?
     private var flowIdStack: [UUID] = []
@@ -124,12 +128,17 @@ final class Logger {
         let logMessage = "\(category.icon) [\(category.rawValue)] \(level.prefix) \(message)"
         let detailMessage = "\(timestamp) \(logMessage) (\(fileName):\(line))"
         
-        // For now, just print. Later we can add os.log, file logging, etc.
-        print(logMessage)
+        // Use the flag to determine output method
+        if useOSLog {
+            // Production: Use os_log (visible in Console.app)
+            let osLog = OSLog(subsystem: "com.plato.app", category: category.rawValue)
+            os_log("%{public}@", log: osLog, type: osLogType(for: level), logMessage)
+        } else {
+            // Development: Use print (visible in Xcode console)
+            print(logMessage)
+        }
         
-        // Also log to os.log for Console.app
-        let osLog = OSLog(subsystem: "com.plato.app", category: category.rawValue)
-        os_log("%{public}@", log: osLog, type: osLogType(for: level), message)
+        // Note: We removed the duplicate output here!
     }
     
     // MARK: - Convenience Methods

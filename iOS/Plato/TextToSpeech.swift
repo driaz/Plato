@@ -26,7 +26,7 @@ class TextToSpeech: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
-            print("Failed to set up audio session for TTS: \(error)")
+            Logger.shared.error("Failed to set up audio session for TTS: \(error)", category: .tts)
         }
     }
     

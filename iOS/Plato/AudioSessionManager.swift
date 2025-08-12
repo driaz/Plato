@@ -35,9 +35,10 @@ final class AudioSessionManager {
             // You can set a preferred sample rate if needed; we accept system default.
             try session.setActive(true)
             configured = true
-            print("🔉 AudioSessionManager configured for duplex (.playAndRecord / .voiceChat).")
+            // Use Logger instead of print
+            Logger.shared.log("AudioSessionManager configured for duplex (.playAndRecord / .voiceChat)", category: .audio, level: .info)
         } catch {
-            print("⚠️ AudioSessionManager configure error: \(error)")
+            Logger.shared.log("AudioSessionManager configure error: \(error)", category: .audio, level: .error)
         }
     }
     
@@ -47,9 +48,10 @@ final class AudioSessionManager {
         do {
             try session.setActive(false, options: [.notifyOthersOnDeactivation])
             configured = false
-            print("🔉 AudioSessionManager deactivated.")
+            Logger.shared.log("AudioSessionManager deactivated", category: .audio, level: .info)
+            
         } catch {
-            print("⚠️ AudioSessionManager deactivate error: \(error)")
+            Logger.shared.log("AudioSessionManager deactivate error: \(error)", category: .audio, level: .error)
         }
     }
 }

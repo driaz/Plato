@@ -11,6 +11,7 @@ import SwiftUI
 struct PlatoApp: App {
     
     init() {
+
         // Configure audio session once at launch
         AudioSessionManager.shared.configureForDuplex()
         
@@ -20,12 +21,6 @@ struct PlatoApp: App {
         #else
         Logger.shared.setMinimumLevel(.warning)
         #endif
-        
-        // Log app launch
-        log("Plato launched", category: .app)
-        
-        // Configure audio session
-        AudioSessionManager.shared.configureForDuplex()
         
        }
     

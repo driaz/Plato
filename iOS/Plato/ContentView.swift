@@ -695,23 +695,4 @@ extension ContentView {
     }
 }
 
-// Also add this test button to your debug overlay
-//struct PCMProductionTestButton: View {
-//    let parentView: ContentView
-//    
-//    var body: some View {
-//        Button(action: {
-//            // Force enable PCM
-////            ConfigManager.shared.useStreamingTTS = true
-//            UserDefaults.standard.synchronize()
-//            
-//            // Test with a simple question
-//            parentView.askQuestionDebug("What is wisdom?")
-//        }) {
-//            Label("Test Production PCM", systemImage: "play.circle")
-//                .font(.caption)
-//        }
-//        .buttonStyle(.borderedProminent)
-//        .controlSize(.small)
-//    }
-//}
+

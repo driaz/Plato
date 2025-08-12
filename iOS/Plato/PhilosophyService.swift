@@ -87,6 +87,7 @@ final class PhilosophyService: ObservableObject {
     
     init() {
         self.apiKey = ConfigManager.shared.openAIAPIKey
+        Logger.shared.log("PhilosophyService initialized", category: .llm, level: .info)
     }
     
     // MARK: - Public API
@@ -100,7 +101,17 @@ final class PhilosophyService: ObservableObject {
         onDelta: @escaping @MainActor (String) -> Void,
         onSentence: @escaping @MainActor (String) -> Void = { _ in }
     ) async throws -> String {
-        guard !apiKey.isEmpty else { throw PhilosophyError.missingAPIKey }
+        guard !apiKey.isEmpty else {
+            Logger.shared.log("Missing OpenAI API key", category: .llm, level: .error)
+            throw PhilosophyError.missingAPIKey
+        }
+        
+        // Start LLM flow
+        let flowId = Logger.shared.startFlow("llm_response")
+        Logger.shared.startTimer("llm_streaming")
+        
+        Logger.shared.log("Starting stream for: '\(question.prefix(50))...'", category: .llm, level: .info)
+        Logger.shared.log("History: \(history.count) messages", category: .llm, level: .debug)
         
         // Build payload
         let payload = try makeChatPayload(
@@ -112,27 +123,46 @@ final class PhilosophyService: ObservableObject {
         let req = try makeURLRequest(with: payload)
         
         // Network bytes stream
+        Logger.shared.startTimer("llm_first_token")
         let (bytes, response) = try await URLSession.shared.bytes(for: req)
         try validate(response: response)
         
         var full = ""
         var sentenceBuffer = ""
         var lastSentenceEnd = 0
+        var tokenCount = 0
+        var sentenceCount = 0
+        var firstTokenReceived = false
         
         for try await line in bytes.lines {
             guard line.hasPrefix("data:") else { continue }
             let raw = line.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
-            if raw == "[DONE]" { break }
+            if raw == "[DONE]" {
+                Logger.shared.log("Stream complete: \(tokenCount) tokens, \(sentenceCount) sentences", category: .llm, level: .info)
+                break
+            }
+            
             guard let data = raw.data(using: .utf8) else { continue }
             do {
                 let chunk = try JSONDecoder().decode(OpenAIStreamChunk.self, from: data)
                 if let delta = chunk.choices.first?.delta?.content, !delta.isEmpty {
+                    
+                    // Track first token
+                    if !firstTokenReceived {
+                        firstTokenReceived = true
+                        Logger.shared.endTimer("llm_first_token")
+                        Logger.shared.log("First token received", category: .llm, level: .debug)
+                    }
+                    
+                    tokenCount += 1
                     full += delta
                     sentenceBuffer += delta
                     await onDelta(delta)
                     
                     // Check for complete sentences
                     if let completeSentence = detectCompleteSentence(in: sentenceBuffer) {
+                        sentenceCount += 1
+                        Logger.shared.log("Sentence \(sentenceCount) detected: '\(completeSentence.prefix(30))...'", category: .llm, level: .debug)
                         await onSentence(completeSentence)
                         // Remove the detected sentence from buffer more safely
                         sentenceBuffer = String(sentenceBuffer.dropFirst(completeSentence.count))
@@ -147,10 +177,21 @@ final class PhilosophyService: ObservableObject {
         // Handle any remaining text as final sentence
         let remaining = sentenceBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
         if !remaining.isEmpty && remaining.split(separator: " ").count >= 2 {
+            sentenceCount += 1
+            Logger.shared.log("Final sentence (\(sentenceCount)): '\(remaining.prefix(30))...'", category: .llm, level: .debug)
             await onSentence(remaining)
         }
         
-        return full.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Complete flow
+        Logger.shared.endTimer("llm_streaming")
+        Logger.shared.endFlow(flowId, name: "llm_response")
+        
+        let finalResponse = full.trimmingCharacters(in: .whitespacesAndNewlines)
+        Logger.shared.log("Response complete: \(finalResponse.count) chars, \(sentenceCount) sentences", category: .llm, level: .info)
+        
+//        return full.trimmingCharacters(in: .whitespacesAndNewlines)
+        return finalResponse
+
     }
     
     /// Backward compatibility - calls new method without sentence callback
@@ -173,8 +214,13 @@ final class PhilosophyService: ObservableObject {
         conversationHistory: [ChatMessage] = []
     ) async throws -> String {
         guard !apiKey.isEmpty else {
+            Logger.shared.log("Missing OpenAI API key", category: .llm, level: .error)
             throw PhilosophyError.missingAPIKey
         }
+        
+        Logger.shared.log("Blocking LLM request for: '\(question.prefix(50))...'", category: .llm, level: .info)
+        Logger.shared.startTimer("llm_blocking")
+        
         let payload = try makeChatPayload(
             question: question,
             history: conversationHistory,
@@ -183,7 +229,12 @@ final class PhilosophyService: ObservableObject {
         let req = try makeURLRequest(with: payload)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response)
-        return try decodeBlockingContent(data: data)
+        let result = try decodeBlockingContent(data: data)
+
+        Logger.shared.endTimer("llm_blocking")
+        Logger.shared.log("Blocking response: \(result.count) chars", category: .llm, level: .info)
+        
+        return result
     }
     
     // MARK: - Sentence Detection
@@ -262,14 +313,18 @@ final class PhilosophyService: ObservableObject {
         history: [ChatMessage],
         stream: Bool
     ) throws -> Data {
+        
         var msgs: [OpenAIChatMessage] = []
+        
         // System
         msgs.append(OpenAIChatMessage(role: "system", content: systemPrompt))
+        
         // History (user + assistant only; skip system duplicates)
         for m in history {
             guard m.role != .system else { continue }
             msgs.append(OpenAIChatMessage(role: m.role.rawValue, content: m.text))
         }
+        
         // Current user turn
         msgs.append(OpenAIChatMessage(role: "user", content: question))
         
@@ -298,9 +353,11 @@ final class PhilosophyService: ObservableObject {
     
     private func validate(response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse else {
+            Logger.shared.log("Invalid response type", category: .llm, level: .error)
             throw PhilosophyError.invalidResponse
         }
         guard http.statusCode == 200 else {
+            Logger.shared.log("API error: HTTP \(http.statusCode)", category: .llm, level: .error)
             throw PhilosophyError.apiError(http.statusCode)
         }
     }
@@ -318,10 +375,12 @@ final class PhilosophyService: ObservableObject {
         do {
             let decoded = try JSONDecoder().decode(OpenAIBlockingResponse.self, from: data)
             guard let first = decoded.choices.first else {
+                Logger.shared.log("No choices in response", category: .llm, level: .error)
                 throw PhilosophyError.noResponse
             }
             return first.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
+            Logger.shared.log("Failed to decode response: \(error)", category: .llm, level: .error)
             throw PhilosophyError.decodingError
         }
     }
@@ -346,7 +405,12 @@ extension PhilosophyService {
         ]
         
         let lowercased = question.lowercased()
-        return searchTriggers.contains { lowercased.contains($0) }
+        let needsSearch = searchTriggers.contains { lowercased.contains($0) }
+
+        if needsSearch {
+            Logger.shared.log("Question needs web search: detected trigger words", category: .network, level: .debug)
+        }
+        return needsSearch
     }
     
     /// Extract search query from user question
@@ -380,6 +444,8 @@ extension PhilosophyService {
         query = query.replacingOccurrences(of: "?", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         
+        Logger.shared.log("Search query extracted: '\(query)'", category: .network, level: .debug)
+        
         return query
     }
     
@@ -393,12 +459,18 @@ extension PhilosophyService {
         
         // Check if we need current information
         if needsWebSearch(question) && cfg.hasBraveSearch {
+            Logger.shared.log("Web search required for: '\(question.prefix(50))...'", category: .network, level: .info)
+            
             // Perform search with cleaned query
             do {
                 let searchQuery = extractSearchQuery(from: question)
-                print("🔎 Extracted search query: '\(searchQuery)'")
-                
+                Logger.shared.startTimer("web_search")
+
                 let searchResults = try await WebSearchService.shared.search(searchQuery, limit: 4)
+                
+                Logger.shared.endTimer("web_search")
+                Logger.shared.log("Search returned \(searchResults.count) results", category: .network, level: .info)
+                
                 let searchContext = WebSearchService.shared.createSearchContext(
                     from: searchResults,
                     query: question
@@ -426,7 +498,7 @@ extension PhilosophyService {
                 
             } catch {
                 // If search fails, fall back to regular response
-                print("⚠️ Search failed: \(error.localizedDescription)")
+                Logger.shared.log("Search failed: \(error.localizedDescription)", category: .network, level: .error)
                 
                 // Add a note about search failure in response
                 let fallbackQuestion = question +
@@ -441,6 +513,10 @@ extension PhilosophyService {
             }
         } else {
             // Regular philosophical response without search
+            if !cfg.hasBraveSearch && needsWebSearch(question) {
+                Logger.shared.log("Search needed but Brave API not configured", category: .network, level: .warning)
+            }
+            
             return try await streamResponse(
                 question: question,
                 history: history,
