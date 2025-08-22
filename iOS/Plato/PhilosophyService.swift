@@ -62,28 +62,51 @@ final class PhilosophyService: ObservableObject {
     
     // Stoic system prompt (unchanged; trimmed whitespace)
     
-    private let systemPrompt = """
-    You are Plato, a warm and wise scholar with deep knowledge across the humanities. While grounded in Stoic philosophy (Marcus Aurelius, Epictetus, Seneca), your wisdom spans:
+    private var systemPrompt: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEEE, MMMM d, yyyy"
+        let currentDate = formatter.string(from: Date())
+        
+        return """
+        Today is \(currentDate).
+        
+        You are Plato, a warm and wise scholar with deep knowledge across the humanities. While grounded in Stoic philosophy (Marcus Aurelius, Epictetus, Seneca), your wisdom spans:
 
-    • Philosophy: From the ancients (Aristotle, Plato) through Renaissance (Machiavelli, Montaigne), Enlightenment (Kant, Hume, Rousseau), to moderns (Rawls, Camus, Sartre, de Beauvoir, Girard)
-    • Literature: The great storytellers - Shakespeare, Dickens, Dostoevsky, Tolstoy, Melville, Hemingway, Steinbeck, Faulkner, McCarthy, Bradbury, Woolf, Morrison, García Márquez
-    • History: Rise and fall of civilizations, revolutions, wars, and the leaders who shaped them
-    • Economics & Society: From Adam Smith to Keynes to behavioral economics; how money, power, and human nature intersect
-    • Human Nature: Psychology, mythology, art - what drives us, inspires us, breaks us, and heals us
+        • Philosophy: From the ancients through moderns
+        • Literature: The great storytellers across cultures
+        • History: Rise and fall of civilizations
+        • Economics & Society: How money, power, and human nature intersect
+        • Human Nature: Psychology, mythology, art
 
-    Your gift: Making profound ideas practical. Whether discussing Raskolnikov's guilt or market bubbles, you connect it to how we should live today.
+        Your gift: Making profound ideas practical and connecting them to how we should live today.
 
-    CAPABILITIES: When asked about current events, recent news, or anything requiring up-to-date information, you have access to web search results that will be provided in the context. Use these search results to give accurate, current information blended with your philosophical perspective.
+        CRITICAL INSTRUCTIONS FOR CURRENT INFORMATION:
+        ============================================
+        When you see "CURRENT WEB SEARCH RESULTS" or "Recent search results" in a message:
+        - These are REAL, CURRENT facts that have been automatically retrieved for you
+        - You MUST use the specific numbers and facts from these search results
+        - DO NOT make up any data - only use what's explicitly provided
+        - DO NOT say "I'll check" or "Let me search" - the search is already done
+        - Present the facts from the search results first, then add philosophical insight
+        
+        If NO search results are provided but someone asks about current events:
+        - Be honest that you don't have current information
+        - Offer philosophical perspective on the topic without specific numbers
+        
+        RESPONSE CONSTRAINTS:
+        - Maximum 400 tokens (enough for complete thoughts with facts and philosophy)
+        - When presenting search results: state facts clearly first, then add philosophical insight
+        - Prioritize accuracy over philosophy if running low on space
+        - Be conversational and natural
+        
+        Remember: When search results appear in the message, they are real and current. Use them.
+        Brevity is wisdom. Accuracy is virtue.
+        """
+    }
 
-    CRITICAL CONSTRAINT: You have a strict 150 token limit. When discussing current events:
-    - Present facts first, accurately and clearly
-    - Add ONE brief philosophical insight at the end (1 short sentence max)
-    - If approaching token limit, prioritize completing factual information
-
-    IMPORTANT: Be concise and conversational—aim for 2-3 sentences max. Focus on ONE key insight. Reference great works and thinkers naturally, like a friend who's read everything but never lectures.
-
-    Brevity is wisdom. One vivid truth beats five abstract thoughts.
-    """
+    // Also increase token limit for search responses in Config.plist:
+    // <key>LLM_MaxTokens</key>
+    // <integer>300</integer>  <!-- Increase from 150 -->
     
     init() {
         self.apiKey = ConfigManager.shared.openAIAPIKey
@@ -450,6 +473,8 @@ extension PhilosophyService {
     }
     
     /// Stream response with optional web search
+    // In PhilosophyService.swift, UPDATE your existing streamResponseWithSearch method:
+
     func streamResponseWithSearch(
         question: String,
         history: [ChatMessage],
@@ -458,71 +483,113 @@ extension PhilosophyService {
     ) async throws -> String {
         
         // Check if we need current information
-        if needsWebSearch(question) && cfg.hasBraveSearch {
-            Logger.shared.log("Web search required for: '\(question.prefix(50))...'", category: .network, level: .info)
+        if needsWebSearch(question) {
             
-            // Perform search with cleaned query
-            do {
-                let searchQuery = extractSearchQuery(from: question)
-                Logger.shared.startTimer("web_search")
-
-                let searchResults = try await WebSearchService.shared.search(searchQuery, limit: 4)
+            // TRY PERPLEXITY FIRST (if available)
+            if cfg.hasPerplexityAPI {
+                Logger.shared.log("Using Perplexity for: '\(question.prefix(50))...'", category: .network, level: .info)
                 
-                Logger.shared.endTimer("web_search")
-                Logger.shared.log("Search returned \(searchResults.count) results", category: .network, level: .info)
-                
-                let searchContext = WebSearchService.shared.createSearchContext(
-                    from: searchResults,
-                    query: question
-                )
-                
-                // Build enhanced question with search context
-                let enhancedQuestion = """
-                The user asked: "\(question)"
-                
-                \(searchContext)
-                
-                IMPORTANT: You have a 150 token limit. Structure your response as:
-                1. Present the key facts from search results clearly and accurately
-                2. Add ONE brief philosophical observation (max 1 sentence)
-                3. If running out of tokens, prioritize completing the facts over philosophy
-                """
-                
-                // Stream response with enhanced context
-                return try await streamResponse(
-                    question: enhancedQuestion,
-                    history: history,
-                    onDelta: onDelta,
-                    onSentence: onSentence
-                )
-                
-            } catch {
-                // If search fails, fall back to regular response
-                Logger.shared.log("Search failed: \(error.localizedDescription)", category: .network, level: .error)
-                
-                // Add a note about search failure in response
-                let fallbackQuestion = question +
-                    "\n\n[Note: Unable to search for current information, providing response based on general knowledge]"
-                
-                return try await streamResponse(
-                    question: fallbackQuestion,
-                    history: history,
-                    onDelta: onDelta,
-                    onSentence: onSentence
-                )
-            }
-        } else {
-            // Regular philosophical response without search
-            if !cfg.hasBraveSearch && needsWebSearch(question) {
-                Logger.shared.log("Search needed but Brave API not configured", category: .network, level: .warning)
+                do {
+                    Logger.shared.startTimer("perplexity_search")
+                    
+                    // Get answer from Perplexity (it searches and synthesizes)
+                    let answer = try await PerplexityService.shared.getAnswer(for: question)
+                    
+                    Logger.shared.endTimer("perplexity_search")
+                    Logger.shared.log("Perplexity returned: \(answer.text.prefix(100))...", category: .network, level: .info)
+                    
+                    // Build enhanced question with Perplexity's answer
+                    let enhancedQuestion = """
+                    The user asked: "\(question)"
+                    
+                    CURRENT INFORMATION (from real-time web search):
+                    \(answer.text)
+                    
+                    Instructions:
+                    1. Use the specific facts and numbers provided above
+                    2. Add a brief Stoic philosophical perspective
+                    3. Keep your total response to 2-3 sentences
+                    """
+                    
+                    // Stream response with enhanced context
+                    return try await streamResponse(
+                        question: enhancedQuestion,
+                        history: history,
+                        onDelta: onDelta,
+                        onSentence: onSentence
+                    )
+                    
+                } catch {
+                    Logger.shared.log("Perplexity failed: \(error.localizedDescription), falling back to Brave", category: .network, level: .error)
+                    // Fall through to Brave
+                }
             }
             
-            return try await streamResponse(
-                question: question,
-                history: history,
-                onDelta: onDelta,
-                onSentence: onSentence
-            )
+            // FALLBACK TO BRAVE if Perplexity not available or failed
+            if cfg.hasBraveSearch {
+                Logger.shared.log("Using Brave Search for: '\(question.prefix(50))...'", category: .network, level: .info)
+                
+                // ... rest of your existing Brave search code ...
+                do {
+                    let searchQuery = extractSearchQuery(from: question)
+                    Logger.shared.startTimer("web_search")
+                    
+                    let searchResults = try await WebSearchService.shared.search(searchQuery, limit: 4)
+                    
+                    Logger.shared.endTimer("web_search")
+                    Logger.shared.log("Search returned \(searchResults.count) results", category: .network, level: .info)
+                    
+                    let searchContext = WebSearchService.shared.createSearchContext(
+                        from: searchResults,
+                        query: question
+                    )
+                    
+                    // Build enhanced question with search context
+                    let enhancedQuestion = """
+                    The user asked: "\(question)"
+                    
+                    \(searchContext)
+                    
+                    IMPORTANT: Structure your response as:
+                    1. Present the key facts from search results clearly and accurately
+                    2. Add ONE brief philosophical observation (max 1 sentence)
+                    3. If running out of tokens, prioritize completing the facts over philosophy
+                    """
+                    
+                    return try await streamResponse(
+                        question: enhancedQuestion,
+                        history: history,
+                        onDelta: onDelta,
+                        onSentence: onSentence
+                    )
+                    
+                } catch {
+                    Logger.shared.log("Search failed: \(error.localizedDescription)", category: .network, level: .error)
+                    
+                    // Add a note about search failure in response
+                    let fallbackQuestion = question +
+                        "\n\n[Note: Unable to search for current information, providing response based on general knowledge]"
+                    
+                    return try await streamResponse(
+                        question: fallbackQuestion,
+                        history: history,
+                        onDelta: onDelta,
+                        onSentence: onSentence
+                    )
+                }
+            }
         }
+        
+        // Regular philosophical response without search
+        if !cfg.hasBraveSearch && !cfg.hasPerplexityAPI && needsWebSearch(question) {
+            Logger.shared.log("Search needed but no API configured", category: .network, level: .warning)
+        }
+        
+        return try await streamResponse(
+            question: question,
+            history: history,
+            onDelta: onDelta,
+            onSentence: onSentence
+        )
     }
 }

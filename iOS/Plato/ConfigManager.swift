@@ -11,6 +11,7 @@ struct ConfigKeys {
     static let openAIAPIKey              = "OpenAI_API_Key"
     static let elevenLabsAPIKey          = "ElevenLabs_API_Key"
     static let braveSearchAPIKey         = "Brave_Search_API_Key"
+    static let perplexityAPIKey          = "Perplexity_API_Key"
 
     
     // Speech Recognition Tunables
@@ -105,6 +106,20 @@ struct ConfigManager {
             return env
         }
         return ""
+    }
+    
+    var perplexityAPIKey: String {
+        if let key = string(ConfigKeys.perplexityAPIKey), key != "YOUR_PERPLEXITY_API_KEY_HERE" {
+            return key
+        }
+        if let env = ProcessInfo.processInfo.environment["PERPLEXITY_API_KEY"], !env.isEmpty {
+            return env
+        }
+        return ""
+    }
+
+    var hasPerplexityAPI: Bool {
+        !perplexityAPIKey.isEmpty
     }
     
     // MARK: - Speech Recognition Tunables

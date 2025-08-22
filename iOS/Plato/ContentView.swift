@@ -24,7 +24,10 @@ struct ContentView: View {
     
     
     @State private var isAlwaysListening = true {
-        didSet { ContentView.isAlwaysListeningGlobal = isAlwaysListening }
+        didSet {
+            Logger.shared.log("State change: alwaysListening = \(isAlwaysListening)", category: .state, level: .debug)
+            ContentView.isAlwaysListeningGlobal = isAlwaysListening
+        }
     }
     
     @State private var hasShownWelcome = false
@@ -157,21 +160,25 @@ struct ContentView: View {
             .onAppear {
                 ContentView.sharedSpeechRecognizer = speechRecognizer
                 ContentView.sharedElevenLabs = elevenLabsService  
-                AudioSessionManager.shared.configureForDuplex()
                 speechRecognizer.requestPermission()
                 
                 speechRecognizer.onAutoUpload = { transcript in
                     let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmed.isEmpty else { return }
                     
-                    if Date() < echoGuardUntil {
-                        Logger.shared.echoDetected(trimmed, reason: "Within echo guard window")
-                        return
-                    }
-                    if isEcho(transcript: trimmed, of: lastAssistantUtterance) {
-                        Logger.shared.echoDetected(trimmed, reason: "AI echo detected (content overlap)")
-                        return
-                    }
+                    
+                    // MARK: - Echo Detection (Currently Disabled)
+                    // This echo detection is not needed with our current architecture since STT stops during TTS.
+                    // However, if we refactor back to .playAndRecord for lower latency, we'll need this.
+                    // Keeping for potential future use in V2.
+//                    if Date() < echoGuardUntil {
+//                        Logger.shared.echoDetected(trimmed, reason: "Within echo guard window")
+//                        return
+//                    }
+//                    if isEcho(transcript: trimmed, of: lastAssistantUtterance) {
+//                        Logger.shared.echoDetected(trimmed, reason: "AI echo detected (content overlap)")
+//                        return
+//                    }
                     
                     askQuestion(trimmed)
                     inputText = ""
@@ -186,6 +193,7 @@ struct ContentView: View {
                 hasShownWelcome = true
             }
             .onChange(of: speechRecognizer.isAuthorized, initial: false) { _, isAuth in
+                Logger.shared.log("State change: speechRecognizer.isAuthorized = \(isAuth)", category: .state, level: .debug)
                 if isAuth && isAlwaysListening && !speechRecognizer.isRecording {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                         speechRecognizer.startAlwaysListening()
@@ -193,6 +201,8 @@ struct ContentView: View {
                 }
             }
             .onDisappear {
+                Logger.shared.log("ContentView disappeared", category: .app, level: .info)
+
                 speechRecognizer.stopAlwaysListening()
                 stopAllTTS()
             }
@@ -208,6 +218,75 @@ struct ContentView: View {
                 Text(errorMessage ?? "An unknown error occurred")
             }
         }
+//        // Add this diagnostic button to ContentView to see EXACTLY what Brave returns:
+//
+//        Button("Validate Brave API") {
+//            Task {
+//                Logger.shared.log("🔍 === BRAVE API VALIDATION ===", category: .network, level: .info)
+//                
+//                let testQueries = [
+//                    "NASDAQ closing price yesterday",
+//                    "S&P 500 close December 13 2024",
+//                    "What is the current NASDAQ index"
+//                ]
+//                
+//                for query in testQueries {
+//                    Logger.shared.log("\n📍 Query: '\(query)'", category: .network, level: .info)
+//                    
+//                    do {
+//                        // Call Brave directly
+//                        let results = try await WebSearchService.shared.search(query, limit: 5)
+//                        
+//                        Logger.shared.log("Got \(results.count) results:", category: .network, level: .info)
+//                        
+//                        // Check EVERY result for numbers
+//                        var foundNumbers = false
+//                        
+//                        for (index, result) in results.enumerated() {
+//                            Logger.shared.log("\n Result \(index + 1):", category: .network, level: .info)
+//                            Logger.shared.log("  Title: \(result.title)", category: .network, level: .info)
+//                            Logger.shared.log("  URL: \(result.url)", category: .network, level: .info)
+//                            Logger.shared.log("  Full Description: \(result.description)", category: .network, level: .info)
+//                            
+//                            // Check if description contains any numbers that look like stock prices
+//                            let description = result.description
+//                            
+//                            // Look for patterns like "21,100" or "6,051" or "21100.31"
+//                            let patterns = [
+//                                #"\d{1,2},\d{3}"#,      // 21,100 or 6,051
+//                                #"\d{4,5}\.\d{2}"#,     // 21100.31
+//                                #"\d{1,2},\d{3}\.\d{2}"# // 21,100.31
+//                            ]
+//                            
+//                            for pattern in patterns {
+//                                if let regex = try? NSRegularExpression(pattern: pattern),
+//                                   let _ = regex.firstMatch(in: description, range: NSRange(description.startIndex..., in: description)) {
+//                                    Logger.shared.log("  ✅ FOUND NUMBER PATTERN in description!", category: .network, level: .info)
+//                                    foundNumbers = true
+//                                }
+//                            }
+//                        }
+//                        
+//                        if !foundNumbers {
+//                            Logger.shared.log("  ❌ NO STOCK PRICES FOUND in any result", category: .network, level: .warning)
+//                        }
+//                        
+//                        // Also create and log the full context that would be sent to Plato
+//                        let context = WebSearchService.shared.createSearchContext(from: results, query: query)
+//                        Logger.shared.log("\n📝 Context that would be sent to Plato:", category: .network, level: .info)
+//                        Logger.shared.log(context, category: .network, level: .info)
+//                        
+//                    } catch {
+//                        Logger.shared.log("❌ Search failed: \(error)", category: .network, level: .error)
+//                    }
+//                }
+//                
+//                Logger.shared.log("\n=== VALIDATION COMPLETE ===", category: .network, level: .info)
+//                Logger.shared.log("Check above to see if ANY result contained actual price numbers", category: .network, level: .info)
+//            }
+//        }
+//        .buttonStyle(.borderedProminent)
+//        .padding()
     }
     
     // MARK: - Helper Methods
@@ -314,6 +393,7 @@ struct ContentView: View {
                 HStack(spacing: 8) {
                     ForEach(quickQuestions, id: \.self) { question in
                         Button(action: {
+                            Logger.shared.log("Quick question tapped: \(question)", category: .app, level: .debug)
                             askQuestion(question)
                         }) {
                             Text(question)
@@ -427,6 +507,7 @@ struct ContentView: View {
     // MARK: - Actions
     
     private func toggleAlwaysListening() {
+        Logger.shared.log("Toggling always listening: \(!isAlwaysListening)", category: .state, level: .info)
         isAlwaysListening.toggle()
         if isAlwaysListening {
             speechRecognizer.startAlwaysListening()
@@ -436,6 +517,7 @@ struct ContentView: View {
     }
     
     private func toggleRecording() {
+        Logger.shared.log("Toggle recording button pressed", category: .app, level: .debug)
         if speechRecognizer.isRecording {
             speechRecognizer.manualUpload()
         } else {
@@ -448,6 +530,11 @@ struct ContentView: View {
     private func askQuestion(_ question: String) {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty && !isLoading else { return }
+        
+        // Start conversation flow tracking
+        let flowId = Logger.shared.startFlow("conversation_turn")
+        Logger.shared.startTimer("full_conversation_loop")
+        Logger.shared.log("Starting question: \(trimmed.prefix(50))", category: .tts, level: .info)
         
         // Stop any ongoing TTS
         stopAllTTS()
@@ -466,6 +553,7 @@ struct ContentView: View {
         }
         
         isLoading = true
+        Logger.shared.log("State change: isLoading = true", category: .state, level: .debug)
         speechRecognizer.stopRecording()
         streamingBuffer = ""
         
@@ -475,6 +563,7 @@ struct ContentView: View {
         
         Task {
             do {
+                Logger.shared.startTimer("llm_streaming")
                 let full = try await philosophyService.streamResponseWithSearch(
                     question: trimmed,
                     history: priorHistory + [userMsg],
@@ -494,26 +583,42 @@ struct ContentView: View {
                         // Intentionally empty - we're not using chunked TTS
                     }
                 )
+                Logger.shared.endTimer("llm_streaming")
                 
                 // finalize assistant turn (ensures we don't miss the final text due to throttling)
                 if let idx = messages.firstIndex(where: { $0.id == assistantID }) {
                     messages[idx].text = full
                 }
                 isLoading = false
+                Logger.shared.log("State change: isLoading = false", category: .state, level: .debug)
                 
                 lastAssistantUtterance = normalizeForEcho(full)
-                
+                Logger.shared.log("Assistant response complete: \(full.prefix(50))...", category: .tts, level: .info)
+
                 // Speak the full response at once (smooth audio)
+                Logger.shared.startTimer("tts_playback")
                 await elevenLabsService.speak(full)
+                Logger.shared.endTimer("tts_playback")
+                
+                // End conversation flow
+                Logger.shared.endTimer("full_conversation_loop")
+                Logger.shared.endFlow(flowId, name: "conversation_turn")
                 
             } catch {
+                Logger.shared.log("Question failed: \(error.localizedDescription)", category: .tts, level: .error)
                 let errText = "I apologize—trouble connecting to my wisdom. (\(error.localizedDescription))"
                 if let idx = messages.firstIndex(where: { $0.id == assistantID }) {
                     messages[idx].text = errText
                 }
                 isLoading = false
+                Logger.shared.log("State change: isLoading = false", category: .state, level: .debug)
                 errorMessage = error.localizedDescription
                 showingError = true
+                
+                Logger.shared.endTimer("llm_streaming")
+                Logger.shared.endTimer("full_conversation_loop")
+                Logger.shared.endFlow(flowId, name: "conversation_turn")
+                
             }
         }
     }
@@ -523,6 +628,7 @@ struct ContentView: View {
     /// Plays the TTS queue sequentially
     private func playTTSQueue() async {
         isPlayingTTS = true
+        Logger.shared.log("Starting TTS queue playback: \(ttsQueue.count) sentences", category: .tts, level: .debug)
         
         while !ttsQueue.isEmpty {
             let sentence = ttsQueue.removeFirst()
@@ -542,10 +648,12 @@ struct ContentView: View {
         }
         
         isPlayingTTS = false
-        
+        Logger.shared.log("TTS queue playback complete", category: .tts, level: .debug)
+
         // Resume listening after all TTS is done
         if isAlwaysListening && !speechRecognizer.isRecording {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                Logger.shared.log("Resuming speech recognition after TTS queue", category: .state, level: .debug)
                 speechRecognizer.startRecording()
             }
         }
@@ -553,6 +661,7 @@ struct ContentView: View {
     
     /// Stops all TTS and clears the queue
     private func stopAllTTS() {
+        Logger.shared.log("Stopping all TTS", category: .tts, level: .debug)
         currentTTSTask?.cancel()
         currentTTSTask = nil
         elevenLabsService.stopSpeaking()

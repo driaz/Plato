@@ -217,7 +217,7 @@ final class Logger {
     
     func endTimer(_ label: String) {
         guard let startTime = performanceTimers[label] else {
-            warning("No timer found for: \(label)", category: .performance)
+//            warning("No timer found for: \(label)", category: .performance)
             return
         }
         

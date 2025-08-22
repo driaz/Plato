@@ -12,8 +12,7 @@ struct PlatoApp: App {
     
     init() {
 
-        // Configure audio session once at launch
-        AudioSessionManager.shared.configureForDuplex()
+
         
         // Configure logging
         #if DEBUG
@@ -21,6 +20,9 @@ struct PlatoApp: App {
         #else
         Logger.shared.setMinimumLevel(.warning)
         #endif
+        
+        // Configure audio session once at launch
+        AudioSessionManager.shared.configureForDuplex()
         
        }
     
