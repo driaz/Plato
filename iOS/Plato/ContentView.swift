@@ -218,75 +218,6 @@ struct ContentView: View {
                 Text(errorMessage ?? "An unknown error occurred")
             }
         }
-//        // Add this diagnostic button to ContentView to see EXACTLY what Brave returns:
-//
-//        Button("Validate Brave API") {
-//            Task {
-//                Logger.shared.log("🔍 === BRAVE API VALIDATION ===", category: .network, level: .info)
-//                
-//                let testQueries = [
-//                    "NASDAQ closing price yesterday",
-//                    "S&P 500 close December 13 2024",
-//                    "What is the current NASDAQ index"
-//                ]
-//                
-//                for query in testQueries {
-//                    Logger.shared.log("\n📍 Query: '\(query)'", category: .network, level: .info)
-//                    
-//                    do {
-//                        // Call Brave directly
-//                        let results = try await WebSearchService.shared.search(query, limit: 5)
-//                        
-//                        Logger.shared.log("Got \(results.count) results:", category: .network, level: .info)
-//                        
-//                        // Check EVERY result for numbers
-//                        var foundNumbers = false
-//                        
-//                        for (index, result) in results.enumerated() {
-//                            Logger.shared.log("\n Result \(index + 1):", category: .network, level: .info)
-//                            Logger.shared.log("  Title: \(result.title)", category: .network, level: .info)
-//                            Logger.shared.log("  URL: \(result.url)", category: .network, level: .info)
-//                            Logger.shared.log("  Full Description: \(result.description)", category: .network, level: .info)
-//                            
-//                            // Check if description contains any numbers that look like stock prices
-//                            let description = result.description
-//                            
-//                            // Look for patterns like "21,100" or "6,051" or "21100.31"
-//                            let patterns = [
-//                                #"\d{1,2},\d{3}"#,      // 21,100 or 6,051
-//                                #"\d{4,5}\.\d{2}"#,     // 21100.31
-//                                #"\d{1,2},\d{3}\.\d{2}"# // 21,100.31
-//                            ]
-//                            
-//                            for pattern in patterns {
-//                                if let regex = try? NSRegularExpression(pattern: pattern),
-//                                   let _ = regex.firstMatch(in: description, range: NSRange(description.startIndex..., in: description)) {
-//                                    Logger.shared.log("  ✅ FOUND NUMBER PATTERN in description!", category: .network, level: .info)
-//                                    foundNumbers = true
-//                                }
-//                            }
-//                        }
-//                        
-//                        if !foundNumbers {
-//                            Logger.shared.log("  ❌ NO STOCK PRICES FOUND in any result", category: .network, level: .warning)
-//                        }
-//                        
-//                        // Also create and log the full context that would be sent to Plato
-//                        let context = WebSearchService.shared.createSearchContext(from: results, query: query)
-//                        Logger.shared.log("\n📝 Context that would be sent to Plato:", category: .network, level: .info)
-//                        Logger.shared.log(context, category: .network, level: .info)
-//                        
-//                    } catch {
-//                        Logger.shared.log("❌ Search failed: \(error)", category: .network, level: .error)
-//                    }
-//                }
-//                
-//                Logger.shared.log("\n=== VALIDATION COMPLETE ===", category: .network, level: .info)
-//                Logger.shared.log("Check above to see if ANY result contained actual price numbers", category: .network, level: .info)
-//            }
-//        }
-//        .buttonStyle(.borderedProminent)
-//        .padding()
     }
     
     // MARK: - Helper Methods
@@ -556,6 +487,17 @@ struct ContentView: View {
         Logger.shared.log("State change: isLoading = true", category: .state, level: .debug)
         speechRecognizer.stopRecording()
         streamingBuffer = ""
+        
+        // Check if we need search
+        let needsSearch = philosophyService.needsWebSearch(trimmed)
+        
+        // If Search needed: Add interjection message first
+        if needsSearch {
+            let interjectionID = UUID()
+            messages.append(ChatMessage(id: interjectionID, role: .assistant, text: "Looking that up, one moment..."))
+            
+            // Speak interjection (already happens in streamResponseWithSearch, but you could move it here)
+        }
         
         // placeholder for assistant
         let assistantID = UUID()

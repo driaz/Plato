@@ -53,6 +53,15 @@ final class PCMStreamingService: ObservableObject {
             return
         }
         
+//        // 🎯 LOG EXACTLY WHAT ELEVENLABS WILL RECEIVE - REVIEWING CLEANED TEXT
+//        Logger.shared.log("🎯 ElevenLabs input text (\(cleanedText.count) chars): '\(cleanedText)'", category: .tts, level: .info)
+//        
+//        // Log as hex to see any hidden characters
+//        if let data = cleanedText.data(using: .utf8) {
+//            let hexString = data.map { String(format: "%02x", $0) }.joined(separator: " ")
+//            Logger.shared.log("🎯 ElevenLabs input (first 100 hex): '\(hexString.prefix(300))'", category: .tts, level: .debug)
+//        }
+//        
         Logger.shared.log("Starting PCM stream - text length: \(cleanedText.count)", category: .tts, level: .debug)
         
         isGenerating = true
@@ -334,7 +343,7 @@ final class PCMStreamingService: ObservableObject {
         floatBuffer.frameLength = AVAudioFrameCount(inputFrameCount)
         
         // Convert int16 to float32
-        let volumeBoost: Float = 2.0  // Amplification factor (adjust as needed)
+        let volumeBoost: Float = 1.5  // Amplification factor (adjust as needed)
         
         if let int16Data = inputBuffer.int16ChannelData?[0],
            let floatData = floatBuffer.floatChannelData?[0] {
@@ -388,7 +397,9 @@ final class PCMStreamingService: ObservableObject {
     }
     
     private func cleanText(_ text: String) -> String {
-        text
+        
+        var cleaned = text
+
             .replacingOccurrences(of: "**", with: "")
             .replacingOccurrences(of: "*", with: "")
             .replacingOccurrences(of: "_", with: "")
@@ -398,6 +409,17 @@ final class PCMStreamingService: ObservableObject {
             .replacingOccurrences(of: "\n\n", with: ". ")
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // Apply normalization ONLY for TTS, not affecting display
+        let beforeNormalization = cleaned
+        cleaned = TextNormalizer.normalizeForTTS(cleaned)
+        
+        if beforeNormalization != cleaned {
+            Logger.shared.log("👁️ User sees: \(beforeNormalization)", category: .tts, level: .debug)
+            Logger.shared.log("🔊 TTS speaks: \(cleaned)", category: .tts, level: .debug)
+        }
+        
+        return cleaned
     }
 }
 

@@ -312,7 +312,9 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     // MARK: - Utilities
     
     private static func cleanText(_ text: String) -> String {
-        text
+        
+        var cleaned = text
+        
             .replacingOccurrences(of: "**", with: "")
             .replacingOccurrences(of: "*",  with: "")
             .replacingOccurrences(of: "_",  with: "")
@@ -321,6 +323,17 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
             .replacingOccurrences(of: "~",  with: "")
             .replacingOccurrences(of: "\n\n", with: ". ")
             .replacingOccurrences(of: "\n", with: " ")
+        
+        // Apply normalization ONLY for TTS, not affecting display
+        let beforeNormalization = cleaned
+        cleaned = TextNormalizer.normalizeForTTS(cleaned)
+        
+        if beforeNormalization != cleaned {
+            Logger.shared.log("👁️ User sees: \(beforeNormalization)", category: .tts, level: .debug)
+            Logger.shared.log("🔊 TTS speaks: \(cleaned)", category: .tts, level: .debug)
+        }
+        
+        return cleaned
     }
 }
 

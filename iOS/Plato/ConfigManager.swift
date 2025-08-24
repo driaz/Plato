@@ -164,7 +164,7 @@ struct ConfigManager {
     }
     
     var llmMaxTokens: Int {
-        Int(number(ConfigKeys.llmMaxTokens) ?? 150)
+        Int(number(ConfigKeys.llmMaxTokens) ?? 400)
     }
     
     var hasBraveSearch: Bool { !braveSearchAPIKey.isEmpty }

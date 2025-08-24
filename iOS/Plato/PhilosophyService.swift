@@ -8,6 +8,8 @@
 
 import Foundation
 
+
+
 // MARK: - OpenAI Wire Models (request)
 private struct OpenAIChatMessage: Codable {
     let role: String
@@ -59,6 +61,8 @@ final class PhilosophyService: ObservableObject {
     private let apiKey: String
     private let baseURL = URL(string: "https://api.openai.com/v1/chat/completions")!
     private let cfg = ConfigManager.shared
+    private let maxTokens = ConfigManager.shared.llmMaxTokens  // referencing the plist MaxTokens Count
+
     
     // Stoic system prompt (unchanged; trimmed whitespace)
     
@@ -94,7 +98,7 @@ final class PhilosophyService: ObservableObject {
         - Offer philosophical perspective on the topic without specific numbers
         
         RESPONSE CONSTRAINTS:
-        - Maximum 400 tokens (enough for complete thoughts with facts and philosophy)
+        - Maximum \(maxTokens) tokens (enough for complete thoughts with facts and philosophy)
         - When presenting search results: state facts clearly first, then add philosophical insight
         - Prioritize accuracy over philosophy if running low on space
         - Be conversational and natural
@@ -412,7 +416,7 @@ final class PhilosophyService: ObservableObject {
 // Add this extension to PhilosophyService.swift:
 extension PhilosophyService {
     /// Determines if a question needs web search
-    private func needsWebSearch(_ question: String) -> Bool {
+     func needsWebSearch(_ question: String) -> Bool {
         let searchTriggers = [
             // Time-based triggers
             "happening", "today", "yesterday", "this week", "this month",
@@ -484,6 +488,9 @@ extension PhilosophyService {
         
         // Check if we need current information
         if needsWebSearch(question) {
+            
+            // Informing the user of a short delay for information retrieval
+            await ContentView.sharedElevenLabs?.speak("Looking that up, one moment...")
             
             // TRY PERPLEXITY FIRST (if available)
             if cfg.hasPerplexityAPI {

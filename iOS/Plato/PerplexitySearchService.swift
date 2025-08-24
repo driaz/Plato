@@ -23,7 +23,7 @@ final class PerplexityService {
         
         // Use correct model name from current Perplexity docs
         let body: [String: Any] = [
-            "model": "sonar",  // The basic web-search model
+            "model": "sonar",  // The basic web-search model 
             "messages": [
                 [
                     "role": "user",
