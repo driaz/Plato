@@ -488,17 +488,6 @@ struct ContentView: View {
         speechRecognizer.stopRecording()
         streamingBuffer = ""
         
-        // Check if we need search
-        let needsSearch = philosophyService.needsWebSearch(trimmed)
-        
-        // If Search needed: Add interjection message first
-        if needsSearch {
-            let interjectionID = UUID()
-            messages.append(ChatMessage(id: interjectionID, role: .assistant, text: "Looking that up, one moment..."))
-            
-            // Speak interjection (already happens in streamResponseWithSearch, but you could move it here)
-        }
-        
         // placeholder for assistant
         let assistantID = UUID()
         messages.append(ChatMessage(id: assistantID, role: .assistant, text: ""))
@@ -506,7 +495,7 @@ struct ContentView: View {
         Task {
             do {
                 Logger.shared.startTimer("llm_streaming")
-                let full = try await philosophyService.streamResponseWithSearch(
+                let full = try await philosophyService.streamResponse(
                     question: trimmed,
                     history: priorHistory + [userMsg],
                     onDelta: { delta in

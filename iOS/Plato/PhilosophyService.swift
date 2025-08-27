@@ -13,7 +13,107 @@ import Foundation
 // MARK: - OpenAI Wire Models (request)
 private struct OpenAIChatMessage: Codable {
     let role: String
-    let content: String
+    let content: String?
+    let tool_calls: [ToolCall]?
+    let tool_call_id: String?
+    
+    init(role: String, content: String) {
+        self.role = role
+        self.content = content
+        self.tool_calls = nil
+        self.tool_call_id = nil
+    }
+    
+    init(role: String, content: String?, tool_calls: [ToolCall]?, tool_call_id: String?) {
+        self.role = role
+        self.content = content
+        self.tool_calls = tool_calls
+        self.tool_call_id = tool_call_id
+    }
+    
+    init(toolCallId: String, content: String) {
+        self.role = "tool"
+        self.content = content
+        self.tool_calls = nil
+        self.tool_call_id = toolCallId
+    }
+}
+
+private struct ToolCall: Codable {
+    let id: String
+    let type: String
+    let function: FunctionCall
+}
+
+private struct FunctionCall: Codable {
+    let name: String
+    let arguments: String
+}
+
+private struct Tool: Codable {
+    let type: String
+    let function: ToolFunction
+}
+
+private struct ToolFunction: Codable {
+    let name: String
+    let description: String
+    let parameters: JSONValue
+    
+    init(name: String, description: String, parameters: [String: Any]) {
+        self.name = name
+        self.description = description
+        self.parameters = JSONValue(parameters)
+    }
+}
+
+// JSON encoding helper
+private struct JSONValue: Codable {
+    let value: Any
+    
+    init(_ value: Any) {
+        self.value = value
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        if let dict = value as? [String: Any] {
+            try container.encode(dict.mapValues { JSONValue($0) })
+        } else if let array = value as? [Any] {
+            try container.encode(array.map { JSONValue($0) })
+        } else if let string = value as? String {
+            try container.encode(string)
+        } else if let bool = value as? Bool {
+            try container.encode(bool)
+        } else if let int = value as? Int {
+            try container.encode(int)
+        } else if let double = value as? Double {
+            try container.encode(double)
+        } else if value is NSNull {
+            try container.encodeNil()
+        }
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let dict = try? container.decode([String: JSONValue].self) {
+            value = dict.mapValues { $0.value }
+        } else if let array = try? container.decode([JSONValue].self) {
+            value = array.map { $0.value }
+        } else if let string = try? container.decode(String.self) {
+            value = string
+        } else if let bool = try? container.decode(Bool.self) {
+            value = bool
+        } else if let int = try? container.decode(Int.self) {
+            value = int
+        } else if let double = try? container.decode(Double.self) {
+            value = double
+        } else if container.decodeNil() {
+            value = NSNull()
+        } else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Cannot decode JSONValue")
+        }
+    }
 }
 
 private struct OpenAIChatRequest: Codable {
@@ -22,16 +122,33 @@ private struct OpenAIChatRequest: Codable {
     let max_tokens: Int?
     let temperature: Double?
     let stream: Bool?
+    let tools: [Tool]?
+    let tool_choice: String?
 }
 
 // MARK: - OpenAI Wire Models (streaming response)
 private struct OpenAIStreamChunk: Decodable {
     struct Choice: Decodable {
-        struct Delta: Decodable { let content: String? }
+        struct Delta: Decodable { 
+            let content: String?
+            let tool_calls: [DeltaToolCall]?
+        }
         let delta: Delta?
         let finish_reason: String?
     }
     let choices: [Choice]
+}
+
+private struct DeltaToolCall: Decodable {
+    let index: Int?
+    let id: String?
+    let type: String?
+    let function: DeltaFunctionCall?
+}
+
+private struct DeltaFunctionCall: Decodable {
+    let name: String?
+    let arguments: String?
 }
 
 enum PhilosophyError: LocalizedError {
@@ -117,6 +234,28 @@ final class PhilosophyService: ObservableObject {
         Logger.shared.log("PhilosophyService initialized", category: .llm, level: .info)
     }
     
+    // MARK: - Tool Definitions
+    
+    private var webSearchTool: Tool {
+        Tool(
+            type: "function",
+            function: ToolFunction(
+                name: "web_search",
+                description: "Search the web for current information, news, events, stock prices, or any real-time data. Use this when the user asks about recent events, current affairs, or any information that requires up-to-date knowledge.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "query": [
+                            "type": "string",
+                            "description": "The search query to look up current information"
+                        ]
+                    ],
+                    "required": ["query"]
+                ]
+            )
+        )
+    }
+    
     // MARK: - Public API
     
     /// Streaming variant with sentence detection.
@@ -140,11 +279,31 @@ final class PhilosophyService: ObservableObject {
         Logger.shared.log("Starting stream for: '\(question.prefix(50))...'", category: .llm, level: .info)
         Logger.shared.log("History: \(history.count) messages", category: .llm, level: .debug)
         
+        return try await streamWithToolCalls(
+            question: question,
+            history: history,
+            onDelta: onDelta,
+            onSentence: onSentence,
+            flowId: flowId
+        )
+    }
+    
+    private func streamWithToolCalls(
+        question: String? = nil,
+        messages: [OpenAIChatMessage] = [],
+        history: [ChatMessage] = [],
+        onDelta: @escaping @MainActor (String) -> Void,
+        onSentence: @escaping @MainActor (String) -> Void = { _ in },
+        flowId: UUID
+    ) async throws -> String {
+        
         // Build payload
         let payload = try makeChatPayload(
             question: question,
+            messages: messages,
             history: history,
-            stream: true
+            stream: true,
+            includeTools: cfg.hasPerplexityAPI || cfg.hasBraveSearch
         )
         
         let req = try makeURLRequest(with: payload)
@@ -156,10 +315,12 @@ final class PhilosophyService: ObservableObject {
         
         var full = ""
         var sentenceBuffer = ""
-        var lastSentenceEnd = 0
         var tokenCount = 0
         var sentenceCount = 0
         var firstTokenReceived = false
+        
+        // Tool call state
+        var currentToolCalls: [String: (id: String, name: String, arguments: String)] = [:]
         
         for try await line in bytes.lines {
             guard line.hasPrefix("data:") else { continue }
@@ -172,9 +333,31 @@ final class PhilosophyService: ObservableObject {
             guard let data = raw.data(using: .utf8) else { continue }
             do {
                 let chunk = try JSONDecoder().decode(OpenAIStreamChunk.self, from: data)
-                if let delta = chunk.choices.first?.delta?.content, !delta.isEmpty {
-                    
-                    // Track first token
+                let choice = chunk.choices.first
+                
+                // Handle tool calls
+                if let toolCalls = choice?.delta?.tool_calls {
+                    for toolCall in toolCalls {
+                        let index = toolCall.index ?? 0
+                        let indexKey = "\(index)"
+                        
+                        if let id = toolCall.id, let type = toolCall.type {
+                            currentToolCalls[indexKey] = (id: id, name: "", arguments: "")
+                        }
+                        
+                        if let function = toolCall.function {
+                            if let name = function.name {
+                                currentToolCalls[indexKey]?.name = name
+                            }
+                            if let args = function.arguments {
+                                currentToolCalls[indexKey]?.arguments += args
+                            }
+                        }
+                    }
+                }
+                
+                // Handle regular content
+                if let delta = choice?.delta?.content, !delta.isEmpty {
                     if !firstTokenReceived {
                         firstTokenReceived = true
                         Logger.shared.endTimer("llm_first_token")
@@ -191,11 +374,25 @@ final class PhilosophyService: ObservableObject {
                         sentenceCount += 1
                         Logger.shared.log("Sentence \(sentenceCount) detected: '\(completeSentence.prefix(30))...'", category: .llm, level: .debug)
                         await onSentence(completeSentence)
-                        // Remove the detected sentence from buffer more safely
                         sentenceBuffer = String(sentenceBuffer.dropFirst(completeSentence.count))
                         sentenceBuffer = sentenceBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
                     }
                 }
+                
+                // Check if this is the end and we have tool calls to execute
+                if let finishReason = choice?.finish_reason, finishReason == "tool_calls" {
+                    Logger.shared.log("Tool calls detected, executing...", category: .llm, level: .info)
+                    return try await handleToolCalls(
+                        toolCalls: currentToolCalls,
+                        originalQuestion: question,
+                        messages: messages,
+                        history: history,
+                        onDelta: onDelta,
+                        onSentence: onSentence,
+                        flowId: flowId
+                    )
+                }
+                
             } catch {
                 // ignore malformed partials; continue
             }
@@ -216,9 +413,126 @@ final class PhilosophyService: ObservableObject {
         let finalResponse = full.trimmingCharacters(in: .whitespacesAndNewlines)
         Logger.shared.log("Response complete: \(finalResponse.count) chars, \(sentenceCount) sentences", category: .llm, level: .info)
         
-//        return full.trimmingCharacters(in: .whitespacesAndNewlines)
         return finalResponse
-
+    }
+    
+    private func handleToolCalls(
+        toolCalls: [String: (id: String, name: String, arguments: String)],
+        originalQuestion: String?,
+        messages: [OpenAIChatMessage],
+        history: [ChatMessage],
+        onDelta: @escaping @MainActor (String) -> Void,
+        onSentence: @escaping @MainActor (String) -> Void,
+        flowId: UUID
+    ) async throws -> String {
+        
+        // Notify user that we're searching
+        await ContentView.sharedElevenLabs?.speak("Let me search for the latest information.")
+        
+        var updatedMessages = messages.isEmpty ? buildMessages(question: originalQuestion, history: history) : messages
+        
+        // Add assistant message with tool calls
+        var assistantMessage: OpenAIChatMessage
+        var toolCallsArray: [ToolCall] = []
+        
+        for (_, toolCall) in toolCalls {
+            let functionCall = FunctionCall(name: toolCall.name, arguments: toolCall.arguments)
+            let toolCallObj = ToolCall(id: toolCall.id, type: "function", function: functionCall)
+            toolCallsArray.append(toolCallObj)
+        }
+        
+        // Create assistant message with tool calls
+        assistantMessage = OpenAIChatMessage(
+            role: "assistant", 
+            content: nil, 
+            tool_calls: toolCallsArray, 
+            tool_call_id: nil
+        )
+        updatedMessages.append(assistantMessage)
+        
+        // Execute tool calls and add results
+        for (_, toolCall) in toolCalls {
+            if toolCall.name == "web_search" {
+                let searchResult = try await executeWebSearch(arguments: toolCall.arguments)
+                let toolResultMessage = OpenAIChatMessage(toolCallId: toolCall.id, content: searchResult)
+                updatedMessages.append(toolResultMessage)
+            }
+        }
+        
+        // Make another call to get the final response
+        return try await streamWithToolCalls(
+            messages: updatedMessages,
+            onDelta: onDelta,
+            onSentence: onSentence,
+            flowId: flowId
+        )
+    }
+    
+    private func buildMessages(question: String?, history: [ChatMessage]) -> [OpenAIChatMessage] {
+        var msgs: [OpenAIChatMessage] = []
+        
+        // System
+        msgs.append(OpenAIChatMessage(role: "system", content: systemPrompt))
+        
+        // History
+        for m in history {
+            guard m.role != .system else { continue }
+            msgs.append(OpenAIChatMessage(role: m.role.rawValue, content: m.text))
+        }
+        
+        // Current user turn
+        if let question = question {
+            msgs.append(OpenAIChatMessage(role: "user", content: question))
+        }
+        
+        return msgs
+    }
+    
+    private func executeWebSearch(arguments: String) async throws -> String {
+        struct SearchArgs: Decodable {
+            let query: String
+        }
+        
+        guard let data = arguments.data(using: .utf8) else {
+            throw PhilosophyError.decodingError
+        }
+        
+        let searchArgs = try JSONDecoder().decode(SearchArgs.self, from: data)
+        Logger.shared.log("Executing web search for: '\(searchArgs.query)'", category: .network, level: .info)
+        
+        // Try Perplexity first if available
+        if cfg.hasPerplexityAPI {
+            do {
+                Logger.shared.startTimer("perplexity_search")
+                let answer = try await PerplexityService.shared.getAnswer(for: searchArgs.query)
+                Logger.shared.endTimer("perplexity_search")
+                Logger.shared.log("Perplexity returned: \(answer.text.prefix(100))...", category: .network, level: .info)
+                return answer.text
+            } catch {
+                Logger.shared.log("Perplexity failed: \(error.localizedDescription), trying Brave", category: .network, level: .error)
+            }
+        }
+        
+        // Fall back to Brave search if available
+        if cfg.hasBraveSearch {
+            do {
+                Logger.shared.startTimer("brave_search")
+                let searchResults = try await WebSearchService.shared.search(searchArgs.query, limit: 4)
+                Logger.shared.endTimer("brave_search")
+                Logger.shared.log("Brave search returned \(searchResults.count) results", category: .network, level: .info)
+                
+                let searchContext = WebSearchService.shared.createSearchContext(
+                    from: searchResults,
+                    query: searchArgs.query
+                )
+                return searchContext
+            } catch {
+                Logger.shared.log("Brave search failed: \(error.localizedDescription)", category: .network, level: .error)
+                throw error
+            }
+        }
+        
+        throw PhilosophyError.noResponse
     }
     
     /// Backward compatibility - calls new method without sentence callback
@@ -279,7 +593,7 @@ final class PhilosophyService: ObservableObject {
             ("!\"", 2), ("?\"", 2)
         ]
         
-        for (ender, enderLength) in sentenceEnders {
+        for (ender, _) in sentenceEnders {
             if let range = buffer.range(of: ender, options: .backwards) {
                 // Check what comes after the punctuation
                 let afterPunct = String(buffer[range.upperBound...])
@@ -336,31 +650,43 @@ final class PhilosophyService: ObservableObject {
     // MARK: - Request Builders
     
     private func makeChatPayload(
-        question: String,
-        history: [ChatMessage],
-        stream: Bool
+        question: String? = nil,
+        messages: [OpenAIChatMessage] = [],
+        history: [ChatMessage] = [],
+        stream: Bool,
+        includeTools: Bool = true
     ) throws -> Data {
         
         var msgs: [OpenAIChatMessage] = []
         
-        // System
-        msgs.append(OpenAIChatMessage(role: "system", content: systemPrompt))
-        
-        // History (user + assistant only; skip system duplicates)
-        for m in history {
-            guard m.role != .system else { continue }
-            msgs.append(OpenAIChatMessage(role: m.role.rawValue, content: m.text))
+        if !messages.isEmpty {
+            msgs = messages
+        } else {
+            // System
+            msgs.append(OpenAIChatMessage(role: "system", content: systemPrompt))
+            
+            // History (user + assistant only; skip system duplicates)
+            for m in history {
+                guard m.role != .system else { continue }
+                msgs.append(OpenAIChatMessage(role: m.role.rawValue, content: m.text))
+            }
+            
+            // Current user turn
+            if let question = question {
+                msgs.append(OpenAIChatMessage(role: "user", content: question))
+            }
         }
         
-        // Current user turn
-        msgs.append(OpenAIChatMessage(role: "user", content: question))
+        let tools = includeTools && (cfg.hasPerplexityAPI || cfg.hasBraveSearch) ? [webSearchTool] : nil
         
         let req = OpenAIChatRequest(
             model: cfg.llmModel,
             messages: msgs,
             max_tokens: cfg.llmMaxTokens,
             temperature: cfg.llmTemperature,
-            stream: stream
+            stream: stream,
+            tools: tools,
+            tool_choice: nil
         )
         do {
             return try JSONEncoder().encode(req)
@@ -405,7 +731,7 @@ final class PhilosophyService: ObservableObject {
                 Logger.shared.log("No choices in response", category: .llm, level: .error)
                 throw PhilosophyError.noResponse
             }
-            return first.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            return first.message.content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         } catch {
             Logger.shared.log("Failed to decode response: \(error)", category: .llm, level: .error)
             throw PhilosophyError.decodingError
@@ -413,190 +739,3 @@ final class PhilosophyService: ObservableObject {
     }
 }
 
-// Add this extension to PhilosophyService.swift:
-extension PhilosophyService {
-    /// Determines if a question needs web search
-     func needsWebSearch(_ question: String) -> Bool {
-        let searchTriggers = [
-            // Time-based triggers
-            "happening", "today", "yesterday", "this week", "this month",
-            "current", "latest", "recent", "recently", "right now",
-            
-            // News/event triggers
-            "news", "update", "election", "conflict", "crisis",
-            "stock market", "markets", "economy",
-            
-            // Question patterns
-            "what happened", "what's going on", "tell me about the",
-            "what is the situation", "what's the latest"
-        ]
-        
-        let lowercased = question.lowercased()
-        let needsSearch = searchTriggers.contains { lowercased.contains($0) }
-
-        if needsSearch {
-            Logger.shared.log("Question needs web search: detected trigger words", category: .network, level: .debug)
-        }
-        return needsSearch
-    }
-    
-    /// Extract search query from user question
-    private func extractSearchQuery(from question: String) -> String {
-        // Remove conversational prefixes
-        var query = question
-        let prefixes = [
-            "hey plato", "hey blade", "plato", "can you tell me",
-            "tell me about", "what do you know about", "search for",
-            "find information about", "look up", "what happened"
-        ]
-        
-        var lowercased = query.lowercased()
-        for prefix in prefixes {
-            if lowercased.hasPrefix(prefix) {
-                query = String(query.dropFirst(prefix.count))
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                lowercased = query.lowercased()
-            }
-        }
-        
-        // Handle relative time references
-        if lowercased.contains("last friday") || lowercased.contains("on friday") {
-            query = query.replacingOccurrences(of: "last Friday", with: "Friday", options: .caseInsensitive)
-            query = query.replacingOccurrences(of: "on Friday", with: "Friday", options: .caseInsensitive)
-            // Add current context for recency
-            query += " recent"
-        }
-        
-        // Clean up question marks and extra words
-        query = query.replacingOccurrences(of: "?", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        Logger.shared.log("Search query extracted: '\(query)'", category: .network, level: .debug)
-        
-        return query
-    }
-    
-    /// Stream response with optional web search
-    // In PhilosophyService.swift, UPDATE your existing streamResponseWithSearch method:
-
-    func streamResponseWithSearch(
-        question: String,
-        history: [ChatMessage],
-        onDelta: @escaping @MainActor (String) -> Void,
-        onSentence: @escaping @MainActor (String) -> Void = { _ in }
-    ) async throws -> String {
-        
-        // Check if we need current information
-        if needsWebSearch(question) {
-            
-            // Informing the user of a short delay for information retrieval
-            await ContentView.sharedElevenLabs?.speak("Looking that up, one moment...")
-            
-            // TRY PERPLEXITY FIRST (if available)
-            if cfg.hasPerplexityAPI {
-                Logger.shared.log("Using Perplexity for: '\(question.prefix(50))...'", category: .network, level: .info)
-                
-                do {
-                    Logger.shared.startTimer("perplexity_search")
-                    
-                    // Get answer from Perplexity (it searches and synthesizes)
-                    let answer = try await PerplexityService.shared.getAnswer(for: question)
-                    
-                    Logger.shared.endTimer("perplexity_search")
-                    Logger.shared.log("Perplexity returned: \(answer.text.prefix(100))...", category: .network, level: .info)
-                    
-                    // Build enhanced question with Perplexity's answer
-                    let enhancedQuestion = """
-                    The user asked: "\(question)"
-                    
-                    CURRENT INFORMATION (from real-time web search):
-                    \(answer.text)
-                    
-                    Instructions:
-                    1. Use the specific facts and numbers provided above
-                    2. Add a brief Stoic philosophical perspective
-                    3. Keep your total response to 2-3 sentences
-                    """
-                    
-                    // Stream response with enhanced context
-                    return try await streamResponse(
-                        question: enhancedQuestion,
-                        history: history,
-                        onDelta: onDelta,
-                        onSentence: onSentence
-                    )
-                    
-                } catch {
-                    Logger.shared.log("Perplexity failed: \(error.localizedDescription), falling back to Brave", category: .network, level: .error)
-                    // Fall through to Brave
-                }
-            }
-            
-            // FALLBACK TO BRAVE if Perplexity not available or failed
-            if cfg.hasBraveSearch {
-                Logger.shared.log("Using Brave Search for: '\(question.prefix(50))...'", category: .network, level: .info)
-                
-                // ... rest of your existing Brave search code ...
-                do {
-                    let searchQuery = extractSearchQuery(from: question)
-                    Logger.shared.startTimer("web_search")
-                    
-                    let searchResults = try await WebSearchService.shared.search(searchQuery, limit: 4)
-                    
-                    Logger.shared.endTimer("web_search")
-                    Logger.shared.log("Search returned \(searchResults.count) results", category: .network, level: .info)
-                    
-                    let searchContext = WebSearchService.shared.createSearchContext(
-                        from: searchResults,
-                        query: question
-                    )
-                    
-                    // Build enhanced question with search context
-                    let enhancedQuestion = """
-                    The user asked: "\(question)"
-                    
-                    \(searchContext)
-                    
-                    IMPORTANT: Structure your response as:
-                    1. Present the key facts from search results clearly and accurately
-                    2. Add ONE brief philosophical observation (max 1 sentence)
-                    3. If running out of tokens, prioritize completing the facts over philosophy
-                    """
-                    
-                    return try await streamResponse(
-                        question: enhancedQuestion,
-                        history: history,
-                        onDelta: onDelta,
-                        onSentence: onSentence
-                    )
-                    
-                } catch {
-                    Logger.shared.log("Search failed: \(error.localizedDescription)", category: .network, level: .error)
-                    
-                    // Add a note about search failure in response
-                    let fallbackQuestion = question +
-                        "\n\n[Note: Unable to search for current information, providing response based on general knowledge]"
-                    
-                    return try await streamResponse(
-                        question: fallbackQuestion,
-                        history: history,
-                        onDelta: onDelta,
-                        onSentence: onSentence
-                    )
-                }
-            }
-        }
-        
-        // Regular philosophical response without search
-        if !cfg.hasBraveSearch && !cfg.hasPerplexityAPI && needsWebSearch(question) {
-            Logger.shared.log("Search needed but no API configured", category: .network, level: .warning)
-        }
-        
-        return try await streamResponse(
-            question: question,
-            history: history,
-            onDelta: onDelta,
-            onSentence: onSentence
-        )
-    }
-}
