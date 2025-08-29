@@ -30,28 +30,31 @@ final class TextNormalizer {
         // 3. Dates (before general numbers)
         result = normalizeDates(result)
         
-        // 4. Times
+        // 4. Temperature units  
+        result = normalizeTemperatures(result)
+        
+        // 5. Times
         result = normalizeTimes(result)
         
-        // 5. Stock tickers and market indices
+        // 6. Stock tickers and market indices
         result = normalizeStockSymbols(result)
         
-        // 6. Ordinals (1st, 2nd, 3rd, etc.)
+        // 7. Ordinals (1st, 2nd, 3rd, etc.)
         result = normalizeOrdinals(result)
         
-        // 7. Decimal numbers (INCLUDING those with commas - do this BEFORE plain comma numbers)
+        // 8. Decimal numbers (INCLUDING those with commas - do this BEFORE plain comma numbers)
         result = normalizeDecimals(result)
         
-        // 8. Large numbers with commas (AFTER decimals so we don't interfere)
+        // 9. Large numbers with commas (AFTER decimals so we don't interfere)
         result = normalizeCommaNumbers(result)
         
-        // 9. Years (4-digit numbers that look like years)
+        // 10. Years (4-digit numbers that look like years)
         result = normalizeYears(result)
         
-        // 10. Plain integers
+        // 11. Plain integers
         result = normalizePlainNumbers(result)
         
-        // 11. Common abbreviations
+        // 12. Common abbreviations
         result = normalizeAbbreviations(result)
         
         return result
@@ -254,6 +257,42 @@ final class TextNormalizer {
                 let ampm = result[ampmRange].lowercased()
                 spoken += " " + (ampm == "am" ? "A M" : "P M")
             }
+            
+            result.replaceSubrange(range, with: spoken)
+        }
+        
+        return result
+    }
+    
+    // MARK: - Temperature Units
+    
+    private static func normalizeTemperatures(_ text: String) -> String {
+        var result = text
+        
+        // Pattern: Handle temperatures like "72°F", "72 °F", "72F", "72 F", "-5°C", "-5 °C", "-5C", "-5 C"
+        let tempPattern = #"(-?\d+(?:\.\d+)?)\s*°?\s*([CF])\b"#
+        let regex = try! NSRegularExpression(pattern: tempPattern, options: .caseInsensitive)
+        let matches = regex.matches(in: result, range: NSRange(result.startIndex..., in: result))
+        
+        for match in matches.reversed() {
+            guard let range = Range(match.range, in: result),
+                  let numRange = Range(match.range(at: 1), in: result),
+                  let unitRange = Range(match.range(at: 2), in: result) else { continue }
+            
+            let number = String(result[numRange])
+            let unit = String(result[unitRange]).uppercased()
+            
+            let spokenNumber: String
+            if number.contains(".") {
+                spokenNumber = speakDecimal(number)
+            } else if let num = Int(number) {
+                spokenNumber = speakNumber(num)
+            } else {
+                spokenNumber = number
+            }
+            
+            let fullUnit = (unit == "F") ? "Fahrenheit" : "Celsius"
+            let spoken = "\(spokenNumber) degrees \(fullUnit)"
             
             result.replaceSubrange(range, with: spoken)
         }

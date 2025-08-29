@@ -314,15 +314,35 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     private static func cleanText(_ text: String) -> String {
         
         var cleaned = text
-        
+            // Remove markdown formatting
             .replacingOccurrences(of: "**", with: "")
             .replacingOccurrences(of: "*",  with: "")
             .replacingOccurrences(of: "_",  with: "")
             .replacingOccurrences(of: "`",  with: "")
             .replacingOccurrences(of: "#",  with: "")
             .replacingOccurrences(of: "~",  with: "")
+            
+            // Handle line breaks
             .replacingOccurrences(of: "\n\n", with: ". ")
             .replacingOccurrences(of: "\n", with: " ")
+            
+            // Fix stock market and bullet point formatting
+            .replacingOccurrences(of: "—", with: ", ")  // Em dash
+            .replacingOccurrences(of: "–", with: ", ")  // En dash
+            
+            // Clean up extra whitespace
+            .replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // Handle bullet points and list formatting using regex
+        cleaned = cleaned.replacingOccurrences(
+            of: "^- ", 
+            with: "", 
+            options: [.regularExpression]
+        )
+        
+        // Replace dashes used as separators with commas
+        cleaned = cleaned.replacingOccurrences(of: " - ", with: ", ")
         
         // Apply normalization ONLY for TTS, not affecting display
         let beforeNormalization = cleaned
