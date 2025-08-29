@@ -381,7 +381,7 @@ final class PhilosophyService: ObservableObject {
                 
                 // Check if this is the end and we have tool calls to execute
                 if let finishReason = choice?.finish_reason, finishReason == "tool_calls" {
-                    Logger.shared.log("Tool calls detected, executing...", category: .llm, level: .info)
+                    Logger.shared.log("🤖 [Tool] Decision: web_search", category: .llm, level: .info)
                     return try await handleToolCalls(
                         toolCalls: currentToolCalls,
                         originalQuestion: question,
@@ -404,6 +404,11 @@ final class PhilosophyService: ObservableObject {
             sentenceCount += 1
             Logger.shared.log("Final sentence (\(sentenceCount)): '\(remaining.prefix(30))...'", category: .llm, level: .debug)
             await onSentence(remaining)
+        }
+        
+        // Log when tools were available but not used
+        if cfg.hasPerplexityAPI || cfg.hasBraveSearch {
+            Logger.shared.log("🤖 [Tool] Decision: direct response (no tools used)", category: .llm, level: .debug)
         }
         
         // Complete flow
