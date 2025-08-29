@@ -269,7 +269,52 @@ final class TextNormalizer {
     private static func normalizeTemperatures(_ text: String) -> String {
         var result = text
         
-        // Pattern: Handle temperatures like "72°F", "72 °F", "72F", "72 F", "-5°C", "-5 °C", "-5C", "-5 C"
+        // First handle temperature ranges like "80s°F", "mid-70sF", "lower 90s C"
+        // Pattern: optional prefix (lower/mid/upper/high/low) + number + s + optional degree symbol + unit
+        let rangePattern = #"((?:lower|upper|mid|high|low)[\s-]?)?(\d{1,2}0)s\s*°?\s*([CF])\b"#
+        let rangeRegex = try! NSRegularExpression(pattern: rangePattern, options: .caseInsensitive)
+        let rangeMatches = rangeRegex.matches(in: result, range: NSRange(result.startIndex..., in: result))
+        
+        for match in rangeMatches.reversed() {
+            guard let range = Range(match.range, in: result) else { continue }
+            
+            var spoken = ""
+            
+            // Handle optional prefix (lower, mid, upper, etc.)
+            if match.range(at: 1).location != NSNotFound,
+               let prefixRange = Range(match.range(at: 1), in: result) {
+                let prefix = String(result[prefixRange])
+                    .replacingOccurrences(of: "-", with: " ")
+                    .trimmingCharacters(in: .whitespaces)
+                spoken += prefix + " "
+            }
+            
+            // Get the number part (e.g., "80" from "80s")
+            if let numRange = Range(match.range(at: 2), in: result) {
+                let number = String(result[numRange])
+                spoken += number + "s"
+            }
+            
+            // Check if degree symbol is present
+            let hasDegreesSymbol = result[range].contains("°")
+            
+            // Get the unit (F or C)
+            if let unitRange = Range(match.range(at: 3), in: result) {
+                let unit = String(result[unitRange]).uppercased()
+                let fullUnit = (unit == "F") ? "Fahrenheit" : "Celsius"
+                
+                // Add "degrees" only if the degree symbol was present
+                if hasDegreesSymbol {
+                    spoken += " degrees " + fullUnit
+                } else {
+                    spoken += " " + fullUnit
+                }
+            }
+            
+            result.replaceSubrange(range, with: spoken)
+        }
+        
+        // Then handle single temperatures like "72°F", "72 °F", "72F", "72 F", "-5°C", "-5 °C", "-5C", "-5 C"
         let tempPattern = #"(-?\d+(?:\.\d+)?)\s*°?\s*([CF])\b"#
         let regex = try! NSRegularExpression(pattern: tempPattern, options: .caseInsensitive)
         let matches = regex.matches(in: result, range: NSRange(result.startIndex..., in: result))
