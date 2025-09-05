@@ -45,10 +45,17 @@ struct ContentView: View {
     @State private var isPlayingTTS = false
     @State private var currentTTSTask: Task<Void, Never>?
     @State private var pendingSentences: Set<String> = []
+    @State private var showRealtimeTest = false
     
-    @StateObject private var speechRecognizer = SpeechRecognizer()
-    @StateObject private var elevenLabsService = ElevenLabsService()
-    @StateObject private var philosophyService = PhilosophyService()
+    // TODO: Replace with RealtimeManager
+    // @StateObject private var speechRecognizer = SpeechRecognizer()
+    // @StateObject private var elevenLabsService = ElevenLabsService()
+    // @StateObject private var philosophyService = PhilosophyService()
+    
+    // DUMMY SERVICES - initialized but disabled to prevent crashes
+    @StateObject private var speechRecognizer = SpeechRecognizer()  // Disabled in init
+    @StateObject private var elevenLabsService = ElevenLabsService()  // Disabled in init
+    @StateObject private var philosophyService = PhilosophyService()  // Disabled in init
     
     private var backgroundGradient: LinearGradient {
         let isDarkMode = colorScheme == .dark
@@ -157,7 +164,17 @@ struct ContentView: View {
             .animation(.easeInOut(duration: 0.3), value: elevenLabsService.isSpeaking)
             .navigationTitle("🏛️ Plato")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Test") {
+                        showRealtimeTest = true
+                    }
+                    .foregroundColor(.blue)
+                }
+            }
             .onAppear {
+                // TODO: Initialize RealtimeManager instead
+                /*
                 ContentView.sharedSpeechRecognizer = speechRecognizer
                 ContentView.sharedElevenLabs = elevenLabsService  
                 speechRecognizer.requestPermission()
@@ -189,9 +206,16 @@ struct ContentView: View {
                     log("User interrupted AI - stopping voice playback", category: .flow, level: .info)
                     stopAllTTS()
                 }
+                */
+                
+                // Keep minimal for compilation
+                ContentView.sharedSpeechRecognizer = speechRecognizer
+                ContentView.sharedElevenLabs = elevenLabsService
                 
                 hasShownWelcome = true
             }
+            // TODO: Replace with Realtime authorization check
+            /*
             .onChange(of: speechRecognizer.isAuthorized, initial: false) { _, isAuth in
                 Logger.shared.log("State change: speechRecognizer.isAuthorized = \(isAuth)", category: .state, level: .debug)
                 if isAuth && isAlwaysListening && !speechRecognizer.isRecording {
@@ -200,22 +224,29 @@ struct ContentView: View {
                     }
                 }
             }
+            */
             .onDisappear {
                 Logger.shared.log("ContentView disappeared", category: .app, level: .info)
-
-                speechRecognizer.stopAlwaysListening()
-                stopAllTTS()
+                // TODO: Disconnect Realtime WebSocket
+                // speechRecognizer.stopAlwaysListening()
+                // stopAllTTS()
             }
+            // TODO: Replace with Realtime transcript updates
+            /*
             .onChange(of: speechRecognizer.transcript, initial: false) { oldText, newText in
                 guard !elevenLabsService.isSpeaking else { return }
                 if !newText.isEmpty {
                     inputText = newText
                 }
             }
+            */
             .alert("Error", isPresented: $showingError) {
                 Button("OK") { }
             } message: {
                 Text(errorMessage ?? "An unknown error occurred")
+            }
+            .sheet(isPresented: $showRealtimeTest) {
+                RealtimeTestView()
             }
         }
     }
@@ -438,23 +469,29 @@ struct ContentView: View {
     // MARK: - Actions
     
     private func toggleAlwaysListening() {
+        // TODO: Replace with Realtime WebSocket connection toggle
         Logger.shared.log("Toggling always listening: \(!isAlwaysListening)", category: .state, level: .info)
         isAlwaysListening.toggle()
+        /*
         if isAlwaysListening {
             speechRecognizer.startAlwaysListening()
         } else {
             speechRecognizer.stopAlwaysListening()
         }
+        */
     }
     
     private func toggleRecording() {
+        // TODO: Replace with Realtime manual recording toggle
         Logger.shared.log("Toggle recording button pressed", category: .app, level: .debug)
+        /*
         if speechRecognizer.isRecording {
             speechRecognizer.manualUpload()
         } else {
             speechRecognizer.startRecording()
             inputText = ""
         }
+        */
     }
     
     /// Streaming ask with chunked TTS
@@ -467,8 +504,9 @@ struct ContentView: View {
         Logger.shared.startTimer("full_conversation_loop")
         Logger.shared.log("Starting question: \(trimmed.prefix(50))", category: .tts, level: .info)
         
-        // Stop any ongoing TTS
-        stopAllTTS()
+        // TODO: Stop any ongoing Realtime audio
+        // stopAllTTS()
+        stopAllTTS() // Temporary stub
         
         // capture history BEFORE adding assistant placeholder
         let priorHistory = messages
@@ -478,14 +516,17 @@ struct ContentView: View {
         messages.append(userMsg)
         inputText = ""
         
+        // TODO: Handle Realtime recording stop
+        /*
         // manual mode stop if needed
         if !isAlwaysListening && speechRecognizer.isRecording {
             speechRecognizer.stopRecording()
         }
+        speechRecognizer.stopRecording()
+        */
         
         isLoading = true
         Logger.shared.log("State change: isLoading = true", category: .state, level: .debug)
-        speechRecognizer.stopRecording()
         streamingBuffer = ""
         
         // placeholder for assistant
@@ -526,10 +567,13 @@ struct ContentView: View {
                 lastAssistantUtterance = normalizeForEcho(full)
                 Logger.shared.log("Assistant response complete: \(full.prefix(50))...", category: .tts, level: .info)
 
+                // TODO: Use Realtime API for TTS
+                /*
                 // Speak the full response at once (smooth audio)
                 Logger.shared.startTimer("tts_playback")
                 await elevenLabsService.speak(full)
                 Logger.shared.endTimer("tts_playback")
+                */
                 
                 // End conversation flow
                 Logger.shared.endTimer("full_conversation_loop")
@@ -592,13 +636,16 @@ struct ContentView: View {
     
     /// Stops all TTS and clears the queue
     private func stopAllTTS() {
+        // TODO: Replace with Realtime API audio stop
         Logger.shared.log("Stopping all TTS", category: .tts, level: .debug)
+        /*
         currentTTSTask?.cancel()
         currentTTSTask = nil
         elevenLabsService.stopSpeaking()
         ttsQueue.removeAll()
         pendingSentences.removeAll()
         isPlayingTTS = false
+        */
     }
 }
 

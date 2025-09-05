@@ -71,14 +71,20 @@ class SpeechRecognizer: ObservableObject {
     }
     
     init() {
-        speechRecognizer?.defaultTaskHint = .dictation
-        Logger.shared.log("SpeechRecognizer initialized", category: .speech, level: .info)
-        requestPermission()
+        print("🛑 SpeechRecognizer init DISABLED for Realtime testing")
+        
+        // Original init code commented out to prevent permission requests
+        // speechRecognizer?.defaultTaskHint = .dictation
+        // Logger.shared.log("SpeechRecognizer initialized", category: .speech, level: .info)
+        // requestPermission()
     }
     
     // MARK: Permissions
     
     func requestPermission() {
+        print("🛑 SpeechRecognizer.requestPermission() DISABLED for Realtime testing")
+        // Original method commented out to prevent audio permission requests
+        /*
         Task { @MainActor in
             Logger.shared.log("Requesting audio permissions", category: .speech, level: .info)
 
@@ -117,11 +123,15 @@ class SpeechRecognizer: ObservableObject {
                         }
             
         }
+        */  // End of commented out requestPermission method
     }
     
     // MARK: Always Listening
     
     func startAlwaysListening() {
+        print("🛑 SpeechRecognizer.startAlwaysListening() DISABLED for Realtime testing")
+        // Original method commented out
+        /*
         guard isAuthorized else {
             Logger.shared.log("Cannot start always-listening: not authorized", category: .speech, level: .warning)
             return
@@ -131,6 +141,8 @@ class SpeechRecognizer: ObservableObject {
         isAlwaysListening = true
         isPaused = false
         startRecording()
+    }
+    */  // End of commented out startAlwaysListening method
     }
     
     func stopAlwaysListening() {

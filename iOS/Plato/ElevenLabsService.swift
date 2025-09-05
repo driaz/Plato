@@ -24,6 +24,9 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     
     override init() {
         super.init()
+        print("🛑 ElevenLabsService init DISABLED for Realtime testing")
+        
+        // Original init code would go here (commented out to prevent audio setup)
     }
     
     // MARK: - Public API
@@ -32,6 +35,9 @@ final class ElevenLabsService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     // In ElevenLabsService.swift, update the speak method to use stopForTTS:
 
     func speak(_ raw: String) async {
+        print("🛑 ElevenLabsService.speak() DISABLED for Realtime testing")
+        return  // Stop here
+        
         
         // Start flow tracking for the entire TTS operation
         let flowId = Logger.shared.startFlow("TTS: \(raw.prefix(30))...")

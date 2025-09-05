@@ -230,8 +230,12 @@ final class PhilosophyService: ObservableObject {
     // <integer>300</integer>  <!-- Increase from 150 -->
     
     init() {
-        self.apiKey = ConfigManager.shared.openAIAPIKey
-        Logger.shared.log("PhilosophyService initialized", category: .llm, level: .info)
+        print("🛑 PhilosophyService init DISABLED for Realtime testing")
+        self.apiKey = "" // Prevent API calls
+        
+        // Original init code commented out
+        // self.apiKey = ConfigManager.shared.openAIAPIKey
+        // Logger.shared.log("PhilosophyService initialized", category: .llm, level: .info)
     }
     
     // MARK: - Tool Definitions
@@ -267,6 +271,9 @@ final class PhilosophyService: ObservableObject {
         onDelta: @escaping @MainActor (String) -> Void,
         onSentence: @escaping @MainActor (String) -> Void = { _ in }
     ) async throws -> String {
+        print("🛑 PhilosophyService.streamResponse() DISABLED for Realtime testing")
+        return "Service disabled for Realtime testing"  // Return dummy response
+        
         guard !apiKey.isEmpty else {
             Logger.shared.log("Missing OpenAI API key", category: .llm, level: .error)
             throw PhilosophyError.missingAPIKey

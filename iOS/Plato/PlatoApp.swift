@@ -11,9 +11,10 @@ import SwiftUI
 struct PlatoApp: App {
     
     init() {
-
-
+        print("🛑 PlatoApp init - ALL INITIALIZATION DISABLED for Realtime testing")
         
+        // Original init code commented out to prevent crashes
+        /*
         // Configure logging
         #if DEBUG
         Logger.shared.setMinimumLevel(.debug)
@@ -22,13 +23,40 @@ struct PlatoApp: App {
         #endif
         
         // Configure audio session once at launch
-        AudioSessionManager.shared.configureForDuplex()
-        
-       }
+        AudioSessionManager.shared.configureForDuplex()  // ← This was causing crashes!
+        */
+    }
     
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            NavigationView {
+                VStack(spacing: 20) {
+                    Text("🛑 CRASH DEBUG MODE")
+                        .font(.title2)
+                        .fontWeight(.bold)
+                        .foregroundColor(.red)
+                    
+                    Text("Testing incremental complexity")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    
+                    NavigationLink("Test Simple Realtime", destination: SimpleRealtimeTestView())
+                        .padding()
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                    
+                    NavigationLink("Test Full ContentView", destination: ContentView())
+                        .padding()
+                        .background(Color.orange)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                    
+                    Spacer()
+                }
+                .padding()
+                .navigationTitle("Debug Tests")
+            }
         }
     }
 }
