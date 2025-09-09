@@ -78,6 +78,18 @@ final class RealtimeManager: ObservableObject {
     private var sessionId: String?
     private var conversationId: String?
     private var isConnected: Bool = false
+    private var isAISpeaking = false
+    private var lastAudioPlaybackTime: Date?
+    private var responseCount = 0
+    private var hasLoggedBlocked = false
+    private var gracePeriodTimer: Timer?
+    private var isInGracePeriod = false
+    private var audioBufferCount = 0
+    private var audioSentCount = 0
+    private var lastLogTime = Date()
+    private var lastResponseTime: Date = Date.distantPast
+    private var peakAudioDuringGrace: Float = 0
+    private var audioChunkCount = 0
     
     // MARK: - Latency Tracking
     private var speechStartTime: Date?
@@ -87,7 +99,6 @@ final class RealtimeManager: ObservableObject {
     // MARK: - Initialization
     init() {
         // Completely empty - no audio work whatsoever
-        print("🌐 RealtimeManager initialized - WebSocket ready, audio on demand")
     }
     
     deinit {
@@ -105,12 +116,12 @@ final class RealtimeManager: ObservableObject {
         }
         audioEngine = nil
         audioPlayerNode = nil
-        print("🔧 RealtimeManager deinit completed safely")
+        // RealtimeManager deinit completed safely
     }
     
     // MARK: - Audio Setup
     private func setupAudioEngine() {
-        print("🎵 Setting up audio engine...")
+        // Setting up audio engine
         
         do {
             // Configure audio session first - this is critical
@@ -121,7 +132,7 @@ final class RealtimeManager: ObservableObject {
             
             guard let engine = audioEngine,
                   let playerNode = audioPlayerNode else {
-                print("❌ Failed to create audio components")
+                // Failed to create audio components
                 return
             }
             
@@ -130,7 +141,7 @@ final class RealtimeManager: ObservableObject {
             
             // Get input node and its format
             inputNode = engine.inputNode
-            let inputFormat = inputNode!.outputFormat(forBus: 0)
+            _ = inputNode!.outputFormat(forBus: 0)
             
             // Create target format for Realtime API (24kHz, 16-bit, mono)
             audioFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, 
@@ -138,8 +149,8 @@ final class RealtimeManager: ObservableObject {
                                        channels: 1, 
                                        interleaved: true)
             
-            guard let targetFormat = audioFormat else {
-                print("❌ Failed to create target audio format")
+            guard audioFormat != nil else {
+                // Failed to create target audio format
                 return
             }
             
@@ -148,16 +159,12 @@ final class RealtimeManager: ObservableObject {
             let outputFormat = mainMixer.outputFormat(forBus: 0)
             engine.connect(playerNode, to: mainMixer, format: outputFormat)
             
-            print("✅ Audio engine setup successful")
-            print("   Input: \(inputFormat.sampleRate)Hz, \(inputFormat.channelCount)ch")
-            print("   Target: \(targetFormat.sampleRate)Hz, \(targetFormat.channelCount)ch")
-            print("   Output: \(outputFormat.sampleRate)Hz, \(outputFormat.channelCount)ch")
+            // Audio engine setup successful
             
             isAudioReady = true
             
         } catch {
-            print("❌ Audio engine setup failed: \(error)")
-            print("❌ Error details: \(error.localizedDescription)")
+            // Audio engine setup failed
             isAudioReady = false
             audioEngine = nil
             audioPlayerNode = nil
@@ -171,27 +178,18 @@ final class RealtimeManager: ObservableObject {
         #if targetEnvironment(simulator)
         // Simulator has limited audio session capabilities - remove .mixWithOthers for clearer audio
         try audioSession.setCategory(.playAndRecord, options: [.defaultToSpeaker])
-        print("🎵 Audio session configured for simulator (NO mixWithOthers)")
+        // Audio session configured for simulator
         #else
         // Full configuration for device  
         try audioSession.setCategory(.playAndRecord, 
                                    mode: .voiceChat, 
                                    options: [.defaultToSpeaker, .allowBluetooth])
-        print("🎵 Audio session configured for device (NO mixWithOthers)")
+        // Audio session configured for device
         #endif
         
         try audioSession.setActive(true)
-        print("🎵 Audio session activated successfully")
-        
-        // Debug audio session state
-        print("🔍 Audio session debug:")
-        print("   Category: \(audioSession.category.rawValue)")
-        print("   Mode: \(audioSession.mode.rawValue)")  
-        print("   Output volume: \(audioSession.outputVolume)")
-        
-        // Force output to speaker
+        // Audio session activated and configured
         try audioSession.overrideOutputAudioPort(.speaker)
-        print("🔊 Forced output to speaker")
     }
     
     // MARK: - Connection Management
@@ -205,7 +203,7 @@ final class RealtimeManager: ObservableObject {
         connectionState = .connecting
         avatarState = .idle
         
-        print("🌐 RealtimeManager: Connecting to Realtime API")
+        // Connecting to Realtime API
         
         // Step 1: Check microphone permission first
         checkMicrophonePermission { [weak self] granted in
@@ -219,7 +217,7 @@ final class RealtimeManager: ObservableObject {
                 
                 // Step 2: Audio will be setup on-demand when user taps Start
                 // For now, just mark that we have microphone permission
-                print("✅ Microphone permission confirmed")
+                // Microphone permission confirmed
                 
                 // Step 3: Create WebSocket connection
                 self.createWebSocketConnection()
@@ -230,16 +228,16 @@ final class RealtimeManager: ObservableObject {
     private func checkMicrophonePermission(completion: @escaping (Bool) -> Void) {
         switch AVAudioSession.sharedInstance().recordPermission {
         case .granted:
-            print("✅ Microphone permission already granted")
+            // Microphone permission already granted
             completion(true)
         case .denied:
-            print("❌ Microphone permission denied")
+            // Microphone permission denied
             completion(false)
         case .undetermined:
-            print("🤔 Requesting microphone permission")
+            // Requesting microphone permission
             AVAudioSession.sharedInstance().requestRecordPermission { granted in
                 DispatchQueue.main.async {
-                    print(granted ? "✅ Microphone permission granted" : "❌ Microphone permission denied")
+                    // Handle microphone permission result
                     completion(granted)
                 }
             }
@@ -250,7 +248,7 @@ final class RealtimeManager: ObservableObject {
     
     private func setupAudioEngineIfNeeded() {
         guard audioEngine == nil else { 
-            print("🎵 Audio engine already set up")
+            // Audio engine already set up
             return 
         }
         setupAudioEngine()
@@ -276,7 +274,7 @@ final class RealtimeManager: ObservableObject {
         webSocket = urlSession?.webSocketTask(with: request)
         webSocket?.resume()
         
-        print("🔌 WebSocket task created, starting to receive messages...")
+        // WebSocket task created
         connectionStatusText = "WebSocket created, waiting for connection..."
         
         // Start receiving messages
@@ -286,7 +284,7 @@ final class RealtimeManager: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
             guard let self = self else { return }
             if self.connectionState == .connecting {
-                print("✅ WebSocket connected successfully")
+                // WebSocket connected successfully
                 self.connectionStatusText = "Connected! Sending session configuration..."
                 // Send initial session configuration once connected
                 self.sendSessionUpdate()
@@ -297,7 +295,7 @@ final class RealtimeManager: ObservableObject {
     }
     
     func disconnect() {
-        print("RealtimeManager: Disconnecting")
+        // Disconnecting
         
         stopListening()
         stopSpeaking()
@@ -314,23 +312,21 @@ final class RealtimeManager: ObservableObject {
     
     // MARK: - Audio Control
     func startListening() {
-        print("🎤 startListening() called")
-        print("   isListening: \(isListening)")
-        print("   connectionState: \(connectionState)")
-        
         guard !isListening, connectionState == .connected else { 
-            print("⚠️ Cannot start listening - not connected or already listening")
             return 
         }
         
-        print("🎤 Starting audio capture...")
+        // Reset AI speaking state to ensure clean start
+        isAISpeaking = false
+        print("🔄 Reset isAISpeaking to false on start")
+        
+        // Log WebSocket connection state
+        print("📡 WebSocket connected: \(webSocket?.state == .running)")
         
         // Setup audio engine on demand
         setupAudioEngineIfNeeded()
         
-        print("   isAudioReady: \(isAudioReady)")
         guard isAudioReady else {
-            print("❌ Cannot start listening - audio engine not ready")
             connectionStatusText = "Audio setup failed"
             return
         }
@@ -350,7 +346,7 @@ final class RealtimeManager: ObservableObject {
     func stopListening() {
         guard isListening else { return }
         
-        print("🎤 Stopping audio capture")
+        // Stopping audio capture
         
         isListening = false
         if avatarState == .listening {
@@ -362,7 +358,14 @@ final class RealtimeManager: ObservableObject {
         stopAudioCapture()
         stopAudioLevelMonitoring()
         
+        // Don't commit if AI is still speaking to prevent response loops
+        guard !isAISpeaking else { 
+            print("⚠️ Blocked commit while AI speaking")
+            return 
+        }
+        
         // Send input audio buffer commit to signal end of speech
+        print("📤 COMMIT triggered from: stopListening()")
         let commitMessage: [String: Any] = [
             "type": "input_audio_buffer.commit"
         ]
@@ -373,14 +376,10 @@ final class RealtimeManager: ObservableObject {
         isSpeaking = true
         avatarState = .speaking
         connectionStatusText = "Assistant speaking..."
-        
-        print("🔊 Assistant started speaking")
     }
     
     func stopSpeaking() {
         guard isSpeaking else { return }
-        
-        print("🔊 Assistant stopped speaking")
         
         isSpeaking = false
         if avatarState == .speaking {
@@ -396,7 +395,7 @@ final class RealtimeManager: ObservableObject {
     private func startAudioCapture() {
         guard let engine = audioEngine,
               let inputNode = inputNode else { 
-            print("⚠️ Cannot start audio capture - engine not available")
+            // Cannot start audio capture - engine not available
             return 
         }
         
@@ -406,12 +405,30 @@ final class RealtimeManager: ObservableObject {
             // Remove any existing tap
             inputNode.removeTap(onBus: 0)
             
-            print("🎵 Installing audio tap with buffer size 1024")
+            // Installing audio tap
             
             // Install tap with smaller buffer for lower latency
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
                 Task { @MainActor in
-                    self?.processAudioBuffer(buffer)
+                    guard let self = self else { return }
+                    
+                    // VERY FIRST CHECK: Block everything if AI is speaking
+                    guard !self.isAISpeaking else { 
+                        self.audioLevel = 0.0
+                        if !self.hasLoggedBlocked {
+                            print("🎤 Microphone blocked")
+                            self.hasLoggedBlocked = true
+                        }
+                        return // Don't process anything!
+                    }
+                    
+                    // Additional timing check for extra safety
+                    if let lastTime = self.lastAudioPlaybackTime, Date().timeIntervalSince(lastTime) < 2.5 {
+                        self.audioLevel = 0.0
+                        return
+                    }
+                    
+                    self.processAudioBuffer(buffer)
                 }
             }
             
@@ -419,13 +436,10 @@ final class RealtimeManager: ObservableObject {
             if !engine.isRunning {
                 try engine.start()
                 isAudioEngineRunning = true
-                print("✅ Audio engine started")
             }
             
-            print("✅ Audio capture active at \(inputFormat.sampleRate)Hz")
-            
         } catch {
-            print("❌ Failed to start audio capture: \(error)")
+            // Failed to start audio capture
             Task { @MainActor in
                 self.isListening = false
                 self.avatarState = .error
@@ -438,31 +452,82 @@ final class RealtimeManager: ObservableObject {
         guard let engine = audioEngine,
               let inputNode = inputNode else { return }
         
-        print("🎵 Stopping audio capture")
         inputNode.removeTap(onBus: 0)
         
         if engine.isRunning {
             engine.stop()
             isAudioEngineRunning = false
-            print("🎵 Audio engine stopped")
         }
     }
     
     private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) {
         guard buffer.frameLength > 0 else { return }
         
-        // Calculate audio level for UI feedback
-        updateAudioLevel(from: buffer)
+        // FIRST LINE: Check if we should block completely
+        guard !(isAISpeaking || isInGracePeriod) else {
+            audioBufferCount += 1
+            
+            // During grace period, monitor peak audio levels (but still block transmission)
+            if isInGracePeriod {
+                let audioLevel = calculateBufferLevel(buffer)
+                peakAudioDuringGrace = max(peakAudioDuringGrace, audioLevel)
+            }
+            
+            return
+        }
         
-        // Convert and send audio to WebSocket
-        sendAudioBuffer(buffer)
+        // Calculate audio level for UI feedback and monitoring only
+        updateAudioLevel(from: buffer)
+        let audioLevel = calculateBufferLevel(buffer)
+        
+        // For ALL buffers when mic is active: send continuous audio stream
+        sendContinuousAudioBuffer(buffer, audioLevel: audioLevel)
+        
+        // Increment counters
+        audioBufferCount += 1
+        audioSentCount += 1
+        
+        // Log metrics every 3 seconds
+        let now = Date()
+        if now.timeIntervalSince(lastLogTime) >= 3.0 {
+            let percentage = audioBufferCount > 0 ? Int((Float(audioSentCount) / Float(audioBufferCount)) * 100) : 0
+            let state = isAISpeaking ? "AI Speaking" : (isInGracePeriod ? "Grace Period" : "Active")
+            print("📊 Audio: \(audioSentCount)/\(audioBufferCount) buffers (\(percentage)%), State: \(state)")
+            lastLogTime = now
+        }
     }
     
-    private func sendAudioBuffer(_ buffer: AVAudioPCMBuffer) {
+    private func sendContinuousAudioBuffer(_ buffer: AVAudioPCMBuffer, audioLevel: Float) {
         guard let targetFormat = audioFormat else { return }
         
-        // Convert buffer to target format (24kHz, 16-bit, mono)
-        let convertedData = convertAudioBuffer(buffer, to: targetFormat)
+        // Dynamic amplification based on RMS level
+        let amplification: Float
+        if audioLevel < 0.001 {
+            amplification = 1.0  // Keep quiet sounds quiet
+        } else if audioLevel < 0.01 {
+            amplification = 4.0  // Soft speech
+        } else {
+            amplification = 8.0  // Normal speech
+        }
+        
+        // Check minimum RMS gate after amplification
+        let amplifiedRMS = audioLevel * amplification
+        if amplifiedRMS < 0.0005 {
+            // Send silence instead of amplified noise
+            let silenceData = createSilenceData(targetFormat: targetFormat, frameCount: Int(buffer.frameLength))
+            let base64Audio = silenceData.base64EncodedString()
+            
+            let audioMessage: [String: Any] = [
+                "type": "input_audio_buffer.append",
+                "audio": base64Audio
+            ]
+            
+            sendWebSocketMessage(audioMessage)
+            return
+        }
+        
+        // Convert with dynamic amplification
+        let convertedData = convertAudioBufferWithAmplification(buffer, to: targetFormat, amplification: amplification)
         guard !convertedData.isEmpty else { return }
         
         let base64Audio = convertedData.base64EncodedString()
@@ -475,7 +540,50 @@ final class RealtimeManager: ObservableObject {
         sendWebSocketMessage(audioMessage)
     }
     
-    private func convertAudioBuffer(_ buffer: AVAudioPCMBuffer, to targetFormat: AVAudioFormat) -> Data {
+    private func sendAudioBuffer(_ buffer: AVAudioPCMBuffer, audioLevel: Float) {
+        // Legacy method - replaced by sendContinuousAudioBuffer
+        sendContinuousAudioBuffer(buffer, audioLevel: audioLevel)
+    }
+    
+    private func convertAudioBufferWithAmplification(_ buffer: AVAudioPCMBuffer, to targetFormat: AVAudioFormat, amplification: Float) -> Data {
+        guard let floatChannelData = buffer.floatChannelData?[0] else { return Data() }
+        
+        let frameCount = Int(buffer.frameLength)
+        let inputSampleRate = buffer.format.sampleRate
+        let targetSampleRate = targetFormat.sampleRate
+        
+        // Simple sample rate conversion
+        let ratio = targetSampleRate / inputSampleRate
+        let targetFrameCount = Int(Double(frameCount) * ratio)
+        
+        var int16Data = [Int16]()
+        int16Data.reserveCapacity(targetFrameCount)
+        
+        for i in 0..<targetFrameCount {
+            let sourceIndex = Int(Double(i) / ratio)
+            if sourceIndex < frameCount {
+                // Apply 8x amplification and clip to range -1.0 to 1.0
+                let amplifiedSample = floatChannelData[sourceIndex] * amplification
+                let clippedSample = max(-1.0, min(1.0, amplifiedSample))
+                // Convert to Int16 with proper scaling
+                int16Data.append(Int16(clippedSample * Float(Int16.max)))
+            }
+        }
+        
+        return Data(bytes: int16Data, count: int16Data.count * 2)
+    }
+    
+    private func createSilenceData(targetFormat: AVAudioFormat, frameCount: Int) -> Data {
+        // Create silence data with the target format
+        let targetSampleRate = targetFormat.sampleRate
+        let adjustedFrameCount = Int(Double(frameCount) * (targetSampleRate / 48000.0))  // Adjust for sample rate
+        
+        // Create array of zeros (silence) as Int16
+        let silenceData = [Int16](repeating: 0, count: adjustedFrameCount)
+        return Data(bytes: silenceData, count: silenceData.count * 2)
+    }
+    
+    private func convertAudioBuffer(_ buffer: AVAudioPCMBuffer, to targetFormat: AVAudioFormat, amplificationFactor: Float = 1.0) -> Data {
         guard let floatChannelData = buffer.floatChannelData?[0] else { return Data() }
         
         let frameCount = Int(buffer.frameLength)
@@ -492,8 +600,9 @@ final class RealtimeManager: ObservableObject {
         for i in 0..<targetFrameCount {
             let sourceIndex = Int(Double(i) / ratio)
             if sourceIndex < frameCount {
-                // Convert float32 to int16 with proper scaling
-                let sample = max(-1.0, min(1.0, floatChannelData[sourceIndex]))
+                // Apply amplification and convert float32 to int16 with proper scaling
+                let amplifiedSample = floatChannelData[sourceIndex] * amplificationFactor
+                let sample = max(-1.0, min(1.0, amplifiedSample))
                 int16Data.append(Int16(sample * 32767.0))
             }
         }
@@ -509,16 +618,13 @@ final class RealtimeManager: ObservableObject {
         let outputSampleRate = outputFormat.sampleRate
         let outputChannels = outputFormat.channelCount
         
-        print("🔄 Converting audio format:")
-        print("   Input: \(inputSampleRate)Hz, \(inputChannels)ch, PCM16, \(audioData.count) bytes")
-        print("   Output: \(outputSampleRate)Hz, \(outputChannels)ch, \(outputFormat.commonFormat.rawValue)")
-        print("   Output format description: \(outputFormat)")
+        // Converting audio format
         
         // Create input format matching API data
-        guard let inputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, 
-                                            sampleRate: inputSampleRate, 
-                                            channels: inputChannels, 
-                                            interleaved: true) else { return nil }
+        guard AVAudioFormat(commonFormat: .pcmFormatInt16, 
+                           sampleRate: inputSampleRate, 
+                           channels: inputChannels, 
+                           interleaved: true) != nil else { return nil }
         
         // Calculate frame counts
         let inputFrameCount = audioData.count / 2 // 2 bytes per Int16
@@ -588,24 +694,7 @@ final class RealtimeManager: ObservableObject {
         
         outputBuffer.frameLength = AVAudioFrameCount(outputFrameCount)
         
-        // Debug: Check if we produced valid audio data
-        print("✅ Audio conversion completed:")
-        print("   Output buffer frame length: \(outputBuffer.frameLength)")
-        print("   Output buffer frame capacity: \(outputBuffer.frameCapacity)")
-        
-        if outputFormat.commonFormat == .pcmFormatFloat32 {
-            if let channelData = outputBuffer.floatChannelData?[0] {
-                let firstSample = channelData[0]
-                let midSample = outputFrameCount > 100 ? channelData[100] : 0.0
-                print("   Sample data (Float32): first=\(firstSample), mid=\(midSample)")
-            }
-        } else if outputFormat.commonFormat == .pcmFormatInt16 {
-            if let channelData = outputBuffer.int16ChannelData?[0] {
-                let firstSample = channelData[0]
-                let midSample = outputFrameCount > 100 ? channelData[100] : 0
-                print("   Sample data (Int16): first=\(firstSample), mid=\(midSample)")
-            }
-        }
+        // Audio conversion completed
         
         return outputBuffer
     }
@@ -620,7 +709,7 @@ final class RealtimeManager: ObservableObject {
                 firstResponseTime = Date()
                 let latency = firstResponseTime!.timeIntervalSince(startTime) * 1000
                 lastLatencyMs = Int(latency)
-                print("⚡ First audio response latency: \(lastLatencyMs)ms")
+                // First audio response latency tracked
                 connectionStatusText = "Received audio (\(lastLatencyMs)ms)"
             }
             
@@ -636,9 +725,7 @@ final class RealtimeManager: ObservableObject {
         let mainMixer = engine.mainMixerNode
         let outputFormat = mainMixer.outputFormat(forBus: 0)
         
-        print("🔊 Preparing audio playback:")
-        print("   Output format: \(outputFormat.sampleRate)Hz, \(outputFormat.channelCount)ch")
-        print("   Received data: \(audioData.count) bytes")
+        // Preparing audio playback
         
         // Create audio buffer from received data (API sends mono PCM16 at 24kHz)
         let receivedFrameCount = audioData.count / 2 // 2 bytes per Int16
@@ -655,7 +742,7 @@ final class RealtimeManager: ObservableObject {
                 try engine.start()
                 isAudioEngineRunning = true
             } catch {
-                print("❌ Failed to start engine for playback: \(error)")
+                // Failed to start engine for playback
                 return
             }
         }
@@ -663,24 +750,16 @@ final class RealtimeManager: ObservableObject {
         // Start player if not already playing
         if !playerNode.isPlaying {
             playerNode.play()
-            print("🔊 Started audio player node")
+            // Started audio player node
             if !isSpeaking {
                 startSpeaking()
             }
         }
         
-        // Debug player state
-        print("🔍 Audio player debug:")
-        print("   Player is playing: \(playerNode.isPlaying)")
-        print("   Buffer frame count: \(buffer.frameLength)")
-        print("   Buffer format: \(buffer.format)")
-        
         // Schedule buffer for playback
         playerNode.scheduleBuffer(buffer) {
-            print("🎵 Audio buffer completed playback")
+            // Audio buffer completed playback
         }
-        
-        print("🔊 Scheduled audio buffer for playback")
     }
     
     // MARK: - Audio Level Monitoring
@@ -698,8 +777,29 @@ final class RealtimeManager: ObservableObject {
         audioLevel = 0.0
     }
     
+    private func calculateBufferLevel(_ buffer: AVAudioPCMBuffer) -> Float {
+        guard let channelData = buffer.floatChannelData?[0] else { return 0.0 }
+        
+        let frameCount = Int(buffer.frameLength)
+        var sum: Float = 0
+        
+        for i in 0..<frameCount {
+            sum += abs(channelData[i])
+        }
+        
+        return sum / Float(frameCount)
+    }
+    
     private func updateAudioLevel(from buffer: AVAudioPCMBuffer) {
         guard let channelData = buffer.floatChannelData?[0] else { return }
+        
+        // Don't update audio level if AI is speaking
+        if isAISpeaking {
+            Task { @MainActor in
+                self.audioLevel = 0.0
+            }
+            return
+        }
         
         let frameCount = Int(buffer.frameLength)
         var sum: Float = 0
@@ -720,7 +820,7 @@ final class RealtimeManager: ObservableObject {
         if let engine = audioEngine, engine.isRunning {
             engine.stop()
             isAudioEngineRunning = false
-            print("🎵 Audio engine stopped")
+            // Audio engine stopped
         }
     }
     
@@ -747,7 +847,7 @@ final class RealtimeManager: ObservableObject {
                     }
                     
                 case .failure(let error):
-                    print("❌ WebSocket receive error: \(error)")
+                    // WebSocket receive error
                     self.connectionStatusText = "Connection failed: \(error.localizedDescription)"
                     self.connectionState = .failed(error)
                     self.isReceivingMessages = false
@@ -760,17 +860,17 @@ final class RealtimeManager: ObservableObject {
     private func handleWebSocketMessage(_ message: URLSessionWebSocketTask.Message) {
         switch message {
         case .string(let text):
-            print("📥 Received WebSocket text: \(text.prefix(200))...")
+            // Received WebSocket text
             lastReceivedMessage = "Text: \(text.prefix(50))..."
             parseRealtimeMessage(text)
             
         case .data(let data):
-            print("📥 Received WebSocket binary data: \(data.count) bytes")
+            // Received WebSocket binary data
             lastReceivedMessage = "Binary: \(data.count) bytes"
             // Handle binary audio data if needed
             
         @unknown default:
-            print("❓ Unknown WebSocket message type")
+            // Unknown WebSocket message type
             lastReceivedMessage = "Unknown message type"
         }
     }
@@ -782,7 +882,11 @@ final class RealtimeManager: ObservableObject {
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let type = json["type"] as? String else { return }
             
-            print("📋 Realtime message type: \(type)")
+            // Only log critical message types
+            let criticalTypes = ["conversation.item.created", "response.created", "response.audio.delta", "response.audio.done", "response.text.delta", "response.text.done", "error"]
+            if criticalTypes.contains(type) {
+                print("📨 WS: \(type)")
+            }
             connectionStatusText = "Received: \(type)"
             
             switch type {
@@ -793,6 +897,7 @@ final class RealtimeManager: ObservableObject {
             case "conversation.item.created":
                 handleConversationItemCreated(json)
             case "response.audio.delta":
+                audioChunkCount += 1
                 handleResponseAudioDelta(json)
             case "response.audio.done":
                 handleResponseAudioDone(json)
@@ -800,25 +905,35 @@ final class RealtimeManager: ObservableObject {
                 handleResponseTextDelta(json)
             case "response.text.done":
                 handleResponseTextDone(json)
+            case "response.created":
+                handleResponseCreated(json)
+            case "response.audio_transcript.done":
+                break // Ignore transcript done
+            case "response.content_part.done":
+                break // Ignore content part done
+            case "response.output_item.done":
+                break // Ignore output item done
+            case "response.done":
+                handleResponseDone(json)
+            case "rate_limits.updated":
+                break // Ignore rate limits
             case "error":
                 handleError(json)
             default:
-                print("Unknown message type: \(type)")
+                break // Silently ignore unknown message types
             }
         } catch {
-            print("Failed to parse WebSocket message: \(error)")
+            // Failed to parse WebSocket message
         }
     }
     
     // MARK: - Send Message
     func sendTextMessage(_ text: String) {
         guard connectionState == .connected else {
-            print("❌ Cannot send message - not connected")
             connectionStatusText = "Error: Not connected"
             return
         }
         
-        print("📤 Sending test message: \(text)")
         connectionStatusText = "Sending test message..."
         
         let testTime = Date()
@@ -872,7 +987,7 @@ final class RealtimeManager: ObservableObject {
                     "type": "server_vad",
                     "threshold": 0.5,
                     "prefix_padding_ms": 300,
-                    "silence_duration_ms": 800
+                    "silence_duration_ms": 500
                 ]
             ]
         ]
@@ -882,7 +997,7 @@ final class RealtimeManager: ObservableObject {
     
     private func sendWebSocketMessage(_ message: [String: Any]) {
         guard let webSocket = webSocket else { 
-            print("❌ No WebSocket available for sending")
+            // No WebSocket available for sending
             return 
         }
         
@@ -890,20 +1005,16 @@ final class RealtimeManager: ObservableObject {
             let data = try JSONSerialization.data(withJSONObject: message)
             let jsonString = String(data: data, encoding: .utf8) ?? ""
             
-            print("📤 Sending: \(jsonString.prefix(200))...")
+            // Silent message sending
             
             webSocket.send(.string(jsonString)) { error in
                 Task { @MainActor in
                     if let error = error {
-                        print("❌ WebSocket send error: \(error)")
                         self.connectionStatusText = "Send failed: \(error.localizedDescription)"
-                    } else {
-                        print("✅ Message sent successfully")
                     }
                 }
             }
         } catch {
-            print("❌ Failed to serialize message: \(error)")
             connectionStatusText = "Serialization failed: \(error.localizedDescription)"
         }
     }
@@ -913,63 +1024,169 @@ final class RealtimeManager: ObservableObject {
         if let session = json["session"] as? [String: Any],
            let id = session["id"] as? String {
             sessionId = id
-            print("Session created with ID: \(id)")
         }
     }
     
     private func handleSessionUpdated(_ json: [String: Any]) {
-        print("Session configuration updated")
+        // Session configuration updated
     }
     
     private func handleConversationItemCreated(_ json: [String: Any]) {
-        if let item = json["item"] as? [String: Any],
-           let type = item["type"] as? String {
-            print("Conversation item created: \(type)")
+        print("🎤 Speech detected while isAISpeaking=\(isAISpeaking)")
+        
+        // CRITICAL: Ignore speech detection while AI is speaking
+        guard !isAISpeaking else {
+            print("⚠️ Ignoring speech detection - AI is speaking")
+            // Clear the buffer to remove any echo
+            clearInputAudioBuffer()
+            return
         }
+        
+        // Check minimum time between responses (3 second cooldown)
+        let timeSinceLastResponse = Date().timeIntervalSince(lastResponseTime)
+        if timeSinceLastResponse < 3.0 {
+            print("🛡️ Ignoring potential echo (too soon after last response)")
+            clearInputAudioBuffer()
+            return
+        }
+        
+        // Only process real user speech
+        // (Future: Add any user speech handling logic here if needed)
+    }
+    
+    private func handleResponseCreated(_ json: [String: Any]) {
+        isAISpeaking = true
+        lastResponseTime = Date()  // Track when AI response begins
+        print("🔄 Reset audioChunkCount to 0 at handleResponseCreated (new response)")
+        audioChunkCount = 0  // Reset counter for new response
+        print("🤖 AI started speaking")
+        clearInputAudioBuffer()
     }
     
     private func handleResponseAudioDelta(_ json: [String: Any]) {
         if let delta = json["delta"] as? String {
-            // Handle audio chunk - this will be implemented in audio streaming
-            print("Received audio delta: \(delta.count) chars")
+            // AI is speaking - disable mic
+            if !isAISpeaking {
+                isAISpeaking = true
+                print("🔊 AI Speaking - mic disabled")
+            }
+            lastAudioPlaybackTime = Date()
             playAudioDelta(delta)
         }
     }
     
     private func handleResponseAudioDone(_ json: [String: Any]) {
-        print("🔊 Audio response complete")
         Task { @MainActor in
+            print("📍 Calling handleAIStoppedSpeaking from response.audio.done")
             self.stopSpeaking()
+            self.lastAudioPlaybackTime = Date()
+            // Start grace period
+            self.handleAIStoppedSpeaking()
         }
     }
     
     private func handleResponseTextDelta(_ json: [String: Any]) {
         if let delta = json["delta"] as? String {
             assistantResponse += delta
-            print("💬 Text delta: \(delta)")
-            
             // Track latency on first text response
             if firstResponseTime == nil, let startTime = speechStartTime {
                 firstResponseTime = Date()
                 let latency = firstResponseTime!.timeIntervalSince(startTime) * 1000
                 lastLatencyMs = Int(latency)
-                print("⚡ First text response latency: \(lastLatencyMs)ms")
                 connectionStatusText = "Response received (\(lastLatencyMs)ms latency)"
             }
         }
     }
     
     private func handleResponseTextDone(_ json: [String: Any]) {
-        print("Text response complete: \(assistantResponse)")
+        // Text response complete
+    }
+    
+    private func handleResponseDone(_ json: [String: Any]) {
+        if let response = json["response"] as? [String: Any],
+           let status = response["status"] as? String {
+            
+            print("📝 Response status: \(status)")
+            
+            // For both cancelled and completed responses, start grace period
+            if status == "cancelled" {
+                print("❌ Response was cancelled")
+                print("📍 Calling handleAIStoppedSpeaking from response.done (cancelled)")
+                handleAIStoppedSpeaking()
+                return
+            }
+            
+            if status == "completed" {
+                print("✅ Response completed")
+                print("📍 Calling handleAIStoppedSpeaking from response.done (completed)")
+                handleAIStoppedSpeaking()
+            }
+        }
     }
     
     private func handleError(_ json: [String: Any]) {
         let errorMessage = json["error"] as? [String: Any] ?? [:]
         let message = errorMessage["message"] as? String ?? "Unknown error"
-        print("Realtime API error: \(message)")
+        // Realtime API error
         
         let error = NSError(domain: "RealtimeAPI", code: -1, userInfo: [NSLocalizedDescriptionKey: message])
         connectionState = .failed(error)
+    }
+    
+    // MARK: - Helper Methods
+    private func clearInputAudioBuffer() {
+        let message: [String: Any] = ["type": "input_audio_buffer.clear"]
+        sendWebSocketMessage(message)
+    }
+    
+    private func commitAudioBuffer() {
+        let message: [String: Any] = ["type": "input_audio_buffer.commit"]
+        sendWebSocketMessage(message)
+        print("📤 COMMIT message sent")
+    }
+    
+    private func handleAIStoppedSpeaking() {
+        guard gracePeriodTimer == nil else {
+            print("⚠️ Grace period already active (timer exists), skipping duplicate")
+            return
+        }
+        
+        print("🔍 handleAIStoppedSpeaking called with \(audioChunkCount) chunks")
+        print("   Stack trace: \(Thread.callStackSymbols[1...min(3, Thread.callStackSymbols.count-1)].joined(separator: "\n   "))")
+        
+        // Set states
+        isAISpeaking = false
+        isInGracePeriod = true
+        peakAudioDuringGrace = 0  // Reset peak audio tracking
+        
+        // Cancel existing timer if any
+        gracePeriodTimer?.invalidate()
+        
+        // Calculate grace period based on actual audio duration
+        // Conservative estimate: 200ms per chunk for slow eloquent voice
+        let estimatedDuration = Double(audioChunkCount) * 0.2
+
+        // Add 4 second buffer for echo dissipation and safety
+        let gracePeriod = min(25.0, estimatedDuration + 4.0)
+
+        // Log the calculation for debugging
+        print("🔊 AI audio: \(audioChunkCount) chunks, ~\(String(format: "%.1f", estimatedDuration))s estimated playback")
+        print("⏸️ Grace period started (\(String(format: "%.1f", gracePeriod))s)")
+
+        // Reset peak tracking
+        peakAudioDuringGrace = 0
+
+        // Create timer with dynamic period
+        gracePeriodTimer = Timer.scheduledTimer(withTimeInterval: gracePeriod, repeats: false) { [weak self] _ in
+           guard let self = self else { return }
+           self.gracePeriodTimer = nil
+           self.isInGracePeriod = false
+           print("📊 Peak audio during grace: \(String(format: "%.4f", self.peakAudioDuringGrace))")
+           print("🎤 Mic resumed after grace period")
+        }
+
+        // Counter will be reset when new response starts (handleResponseCreated)
+        // NOT here - this was the bug!
     }
 }
 
