@@ -73,6 +73,8 @@ final class RealtimeManager: ObservableObject {
     private let apiKey = ConfigManager.shared.openAIAPIKey
     private let realtimeURL = "wss://api.openai.com/v1/realtime"
     private let model = "gpt-4o-mini-realtime-preview"
+    private let voiceOption = "ballad"  // Warm and expressive voice
+    private let volumeAmplification: Float = 1.75  // 75% louder, adjustable between 1.0-2.0
     
     // MARK: - State Management
     private var sessionId: String?
@@ -703,6 +705,9 @@ final class RealtimeManager: ObservableObject {
         guard let audioData = Data(base64Encoded: base64Audio),
               !audioData.isEmpty else { return }
         
+        // Amplify the audio for better volume
+        let amplifiedData = amplifyAudioData(audioData, factor: volumeAmplification)
+        
         Task { @MainActor in
             // Track latency on first audio response
             if firstResponseTime == nil, let startTime = speechStartTime {
@@ -713,7 +718,7 @@ final class RealtimeManager: ObservableObject {
                 connectionStatusText = "Received audio (\(lastLatencyMs)ms)"
             }
             
-            playAudioData(audioData)
+            playAudioData(amplifiedData)
         }
     }
     
@@ -977,7 +982,7 @@ final class RealtimeManager: ObservableObject {
             "session": [
                 "modalities": ["text", "audio"],
                 "instructions": SessionConfig.stoicInstructions,
-                "voice": SessionConfig.voice,
+                "voice": voiceOption,
                 "input_audio_format": SessionConfig.inputAudioFormat,
                 "output_audio_format": SessionConfig.outputAudioFormat,
                 "input_audio_transcription": [
@@ -1134,6 +1139,31 @@ final class RealtimeManager: ObservableObject {
     }
     
     // MARK: - Helper Methods
+    private func amplifyAudioData(_ data: Data, factor: Float) -> Data {
+        var amplifiedData = Data()
+        
+        // Process as 16-bit PCM samples
+        data.withUnsafeBytes { rawBytes in
+            let int16Ptr = rawBytes.bindMemory(to: Int16.self)
+            let sampleCount = data.count / 2
+            
+            for i in 0..<sampleCount {
+                let sample = Float(int16Ptr[i])
+                let amplified = sample * factor
+                
+                // Clip to prevent distortion
+                let clipped = max(Float(Int16.min), min(Float(Int16.max), amplified))
+                let int16Value = Int16(clipped)
+                
+                withUnsafeBytes(of: int16Value.littleEndian) { bytes in
+                    amplifiedData.append(contentsOf: bytes)
+                }
+            }
+        }
+        
+        return amplifiedData
+    }
+    
     private func clearInputAudioBuffer() {
         let message: [String: Any] = ["type": "input_audio_buffer.clear"]
         sendWebSocketMessage(message)
@@ -1167,11 +1197,15 @@ final class RealtimeManager: ObservableObject {
         let estimatedDuration = Double(audioChunkCount) * 0.2
 
         // Add 4 second buffer for echo dissipation and safety
-        let gracePeriod = min(25.0, estimatedDuration + 4.0)
+        let gracePeriod = estimatedDuration + 4.5
 
         // Log the calculation for debugging
         print("🔊 AI audio: \(audioChunkCount) chunks, ~\(String(format: "%.1f", estimatedDuration))s estimated playback")
         print("⏸️ Grace period started (\(String(format: "%.1f", gracePeriod))s)")
+        
+        if gracePeriod > 20.0 {
+            print("⚠️ Long response detected: \(gracePeriod)s grace period")
+        }
 
         // Reset peak tracking
         peakAudioDuringGrace = 0
@@ -1200,19 +1234,7 @@ extension RealtimeManager {
         static let sampleRate: Int = 24000
         
         static let stoicInstructions: String = """
-        You are Plato, an AI philosophical guide inspired by ancient Stoic wisdom, primarily Marcus Aurelius, Epictetus, and Seneca. 
-
-        Your core principles:
-        - Speak with warm authority and gentle wisdom
-        - Focus on what we can control vs. what we cannot
-        - Emphasize virtue, resilience, and inner peace
-        - Use practical examples and analogies
-        - Keep responses conversational and accessible
-        - Be encouraging yet realistic about life's challenges
-
-        Respond naturally in a conversational tone, as if you're having a thoughtful discussion with a friend seeking guidance. Keep responses concise but meaningful, typically 1-3 sentences unless deeper explanation is needed.
-
-        Remember: You help people find strength within themselves, not give them external solutions to control.
+        You are a wise and compassionate Stoic philosopher mentor. Draw from the wisdom of Marcus Aurelius, Epictetus, and Seneca, but speak with warmth and understanding. Your role is to help users navigate life's challenges with practical Stoic principles. Keep responses concise - aim for 2-3 sentences that deliver one clear, actionable insight. Be encouraging yet honest, gentle yet direct. Remember that Stoicism is not about suppressing emotions, but understanding and working with them wisely.
         """
     }
 }
