@@ -80,7 +80,7 @@ final class RealtimeManager: ObservableObject {
     private var sessionId: String?
     private var conversationId: String?
     private var isConnected: Bool = false
-    private var isAISpeaking = false
+    @Published var isAISpeaking = false
     private var lastAudioPlaybackTime: Date?
     private var responseCount = 0
     private var hasLoggedBlocked = false
@@ -196,16 +196,28 @@ final class RealtimeManager: ObservableObject {
     
     // MARK: - Connection Management
     func connect() {
-        guard connectionState != .connected else { return }
+        print("🔗 connect() called")
+        print("📊 Current connection state: \(connectionState)")
+        
+        guard connectionState != .connected else { 
+            print("⚠️ Already connected, skipping")
+            return 
+        }
+        
+        print("🔑 API Key present: \(!apiKey.isEmpty)")
+        print("🔑 API Key length: \(apiKey.count)")
+        
         guard !apiKey.isEmpty else {
+            print("❌ API key missing!")
             connectionState = .failed(NSError(domain: "RealtimeManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "OpenAI API key not configured"]))
             return
         }
         
+        print("🔄 Setting connection state to .connecting")
         connectionState = .connecting
         avatarState = .idle
         
-        // Connecting to Realtime API
+        print("🚀 Starting connection process...")
         
         // Step 1: Check microphone permission first
         checkMicrophonePermission { [weak self] granted in
@@ -257,41 +269,68 @@ final class RealtimeManager: ObservableObject {
     }
     
     private func createWebSocketConnection() {
+        print("🌐 createWebSocketConnection() called")
+        
         // Create URL with model parameter
-        guard let url = URL(string: "\(realtimeURL)?model=\(model)") else {
+        let urlString = "\(realtimeURL)?model=\(model)"
+        print("📡 Connecting to: \(urlString)")
+        
+        guard let url = URL(string: urlString) else {
+            print("❌ Invalid WebSocket URL: \(urlString)")
             connectionState = .failed(NSError(domain: "RealtimeManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid WebSocket URL"]))
             return
         }
+        
+        print("✅ URL created successfully: \(url)")
         
         // Create request with authentication
         var request = URLRequest(url: url)
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta")
         
+        print("🔑 Authorization header set")
+        print("📋 Authorization: Bearer \(apiKey.prefix(10))...") // Log only first 10 chars for security
+        print("📋 OpenAI-Beta: realtime=v1")
+        
         // Create URL session
         let config = URLSessionConfiguration.default
         urlSession = URLSession(configuration: config)
+        print("📝 URL session created")
         
         // Create WebSocket task
         webSocket = urlSession?.webSocketTask(with: request)
+        print("🔌 WebSocket task created")
+        
         webSocket?.resume()
+        print("▶️ WebSocket task resumed")
         
         // WebSocket task created
         connectionStatusText = "WebSocket created, waiting for connection..."
         
         // Start receiving messages
         startReceivingMessages()
+        print("📨 Started receiving messages")
         
         // Check connection after a brief delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
             guard let self = self else { return }
+            print("⏰ Connection timeout check (3s elapsed)")
+            print("📊 Current connection state: \(self.connectionState)")
+            
             if self.connectionState == .connecting {
-                // WebSocket connected successfully
+                print("✅ Assuming WebSocket connected successfully (still in .connecting state)")
                 self.connectionStatusText = "Connected! Sending session configuration..."
+                
                 // Send initial session configuration once connected
+                print("📤 Sending session configuration...")
                 self.sendSessionUpdate()
+                
+                print("🔄 Setting connection state to .connected")
                 self.connectionState = .connected
                 self.connectionStatusText = "Ready for conversation"
+                print("🎉 Connection process completed!")
+            } else {
+                print("⚠️ Connection state changed during timeout period: \(self.connectionState)")
             }
         }
     }
@@ -391,6 +430,49 @@ final class RealtimeManager: ObservableObject {
         connectionStatusText = "Ready to listen"
         
         // Don't stop the player node completely, just let current buffers finish
+    }
+    
+    func interruptAI() {
+        guard isAISpeaking else { 
+            print("⚠️ No AI speech to interrupt")
+            return 
+        }
+        
+        print("🛑 Interrupting AI speech")
+        
+        // Cancel the OpenAI response
+        let cancelMsg: [String: Any] = ["type": "response.cancel"]
+        sendWebSocketMessage(cancelMsg)
+        print("📤 Sent response.cancel to OpenAI")
+        
+        // Clear any pending audio
+        let clearMsg: [String: Any] = ["type": "input_audio_buffer.clear"]
+        sendWebSocketMessage(clearMsg)
+        
+        // Stop audio playback immediately
+        stopAudioPlayback()
+        
+        // Reset states
+        isAISpeaking = false
+        isInGracePeriod = false
+        gracePeriodTimer?.invalidate()
+        gracePeriodTimer = nil
+        audioChunkCount = 0
+        
+        print("✅ AI interrupted successfully")
+    }
+    
+    private func stopAudioPlayback() {
+        // Stop the audio player node immediately
+        audioPlayerNode?.stop()
+        
+        // Reset speaking state
+        if isSpeaking {
+            isSpeaking = false
+            if avatarState == .speaking {
+                avatarState = .idle
+            }
+        }
     }
     
     // MARK: - Audio Streaming
@@ -852,7 +934,8 @@ final class RealtimeManager: ObservableObject {
                     }
                     
                 case .failure(let error):
-                    // WebSocket receive error
+                    print("❌ WebSocket receive error: \(error.localizedDescription)")
+                    print("🔌 Error details: \(error)")
                     self.connectionStatusText = "Connection failed: \(error.localizedDescription)"
                     self.connectionState = .failed(error)
                     self.isReceivingMessages = false
@@ -1073,7 +1156,7 @@ final class RealtimeManager: ObservableObject {
             // AI is speaking - disable mic
             if !isAISpeaking {
                 isAISpeaking = true
-                print("🔊 AI Speaking - mic disabled")
+                print("🔊 isAISpeaking = true (AI Speaking - mic disabled)")
             }
             lastAudioPlaybackTime = Date()
             playAudioDelta(delta)
@@ -1186,6 +1269,7 @@ final class RealtimeManager: ObservableObject {
         
         // Set states
         isAISpeaking = false
+        print("🔊 isAISpeaking = false (AI stopped speaking)")
         isInGracePeriod = true
         peakAudioDuringGrace = 0  // Reset peak audio tracking
         

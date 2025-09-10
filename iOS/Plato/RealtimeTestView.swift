@@ -61,7 +61,7 @@ struct RealtimeTestView: View {
             ScrollView {
                 VStack(spacing: 20) {
                     connectionStatusView
-                    controlButtonsView
+                    // controlButtonsView - Removed for auto-connection
                     audioControlsView
                     textInputView
                     performanceView
@@ -87,6 +87,30 @@ struct RealtimeTestView: View {
                     Button("Clear") {
                         clearAll()
                     }
+                }
+            }
+            .onAppear {
+                Task {
+                    print("🚀 Auto-starting Realtime connection...")
+                    
+                    // Connect
+                    realtimeManager.connect()
+                    
+                    // Wait for connection with multiple checks
+                    for i in 0..<5 {  // Check 5 times
+                        try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+                        
+                        print("📊 Check \(i+1)/5 - Connection state: \(realtimeManager.connectionState)")
+                        
+                        if realtimeManager.connectionState == .connected {
+                            print("✅ Connected! Starting audio...")
+                            realtimeManager.startListening()
+                            return  // Exit once we start listening
+                        }
+                    }
+                    
+                    // If still not connected after 5 seconds, show error
+                    print("❌ Failed to connect after 5 seconds")
                 }
             }
         }
@@ -182,35 +206,47 @@ struct RealtimeTestView: View {
                 .padding(.horizontal, 4)
             }
             
-            HStack(spacing: 12) {
-                // Microphone Button
-                Button(action: toggleListening) {
-                    VStack(spacing: 4) {
-                        ZStack {
-                            Circle()
-                                .fill(realtimeManager.isListening ? Color.red : Color.green)
-                                .frame(width: 60, height: 60)
-                            
-                            Image(systemName: realtimeManager.isListening ? "mic.fill" : "mic")
-                                .font(.title2)
-                                .foregroundColor(.white)
-                            
-                            // Pulsing animation when listening
-                            if realtimeManager.isListening {
-                                Circle()
-                                    .stroke(Color.red.opacity(0.5), lineWidth: 2)
-                                    .frame(width: 70, height: 70)
-                                    .scaleEffect(CGFloat(realtimeManager.audioLevel) * 0.5 + 1.0)
-                                    .animation(.easeInOut(duration: 0.1), value: realtimeManager.audioLevel)
-                            }
-                        }
-                        
-                        Text(realtimeManager.isListening ? "Stop Listening" : "Start Listening")
-                            .font(.caption)
-                            .fontWeight(.medium)
-                    }
+            // Status indicator
+            HStack {
+                Circle()
+                    .fill(realtimeManager.isListening ? Color.green : Color.gray)
+                    .frame(width: 12, height: 12)
+                    .overlay(
+                        Circle()
+                            .stroke(Color.green.opacity(0.5), lineWidth: realtimeManager.isListening ? 2 : 0)
+                            .scaleEffect(realtimeManager.isListening ? 1.5 : 1)
+                            .opacity(realtimeManager.isListening ? 0 : 1)
+                            .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: false), value: realtimeManager.isListening)
+                    )
+                
+                Text(getStatusText())
+                    .font(.headline)
+                    .foregroundColor(.primary)
+                
+                Spacer()
+            }
+            .padding()
+            
+            // Always show interrupt button, just disable when not speaking
+            Button(action: {
+                realtimeManager.interruptAI()
+            }) {
+                HStack {
+                    Image(systemName: "hand.raised.fill")
+                    Text("Interrupt")
                 }
-                .disabled(realtimeManager.connectionState != .connected)
+                .font(.headline)
+                .foregroundColor(.white)
+                .padding()
+                .frame(maxWidth: .infinity)
+                .background(realtimeManager.isAISpeaking ? Color.orange : Color.gray)
+                .cornerRadius(12)
+            }
+            .padding(.horizontal)
+            .disabled(!realtimeManager.isAISpeaking)
+            
+            HStack(spacing: 12) {
+                Spacer()
                 
                 Spacer()
                 
@@ -458,6 +494,22 @@ struct RealtimeTestView: View {
                 .background(Color.blue.opacity(0.05))
                 .cornerRadius(10)
             }
+        }
+    }
+    
+    // MARK: - Helper Functions
+    
+    private func getStatusText() -> String {
+        if realtimeManager.isSpeaking {
+            return "Plato is speaking..."
+        } else if realtimeManager.isListening {
+            return "Plato is listening..."
+        } else if realtimeManager.connectionState == .connecting {
+            return "Connecting..."
+        } else if realtimeManager.connectionState == .disconnected {
+            return "Disconnected"
+        } else {
+            return "Initializing..."
         }
     }
     
