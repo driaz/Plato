@@ -165,7 +165,16 @@ struct ContentView: View {
             .navigationTitle("🏛️ Plato")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    NavigationLink(destination: AvatarChatView()) {
+                        HStack {
+                            Image(systemName: "person.crop.circle.fill")
+                            Text("Avatar")
+                        }
+                        .font(.caption)
+                        .foregroundColor(.purple)
+                    }
+
                     Button("Test") {
                         showRealtimeTest = true
                     }
@@ -687,6 +696,7 @@ struct MessageBubble: View {
 }
 
 // MARK: - Preview
+@available(iOS 18.0, *)
 #Preview {
     ContentView()
 }

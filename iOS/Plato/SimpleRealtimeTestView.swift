@@ -64,6 +64,7 @@ struct SimpleRealtimeTestView: View {
     }
 }
 
+@available(iOS 18.0, *)
 #Preview {
     SimpleRealtimeTestView()
 }

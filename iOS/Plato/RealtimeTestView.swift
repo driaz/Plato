@@ -227,6 +227,7 @@ struct RealtimeTestView: View {
             }
             .padding()
             
+            /*
             // Always show interrupt button, just disable when not speaking
             Button(action: {
                 realtimeManager.interruptAI()
@@ -244,6 +245,7 @@ struct RealtimeTestView: View {
             }
             .padding(.horizontal)
             .disabled(!realtimeManager.isAISpeaking)
+            */
             
             HStack(spacing: 12) {
                 Spacer()
@@ -561,6 +563,7 @@ struct RealtimeTestView: View {
 }
 
 // MARK: - Preview
+@available(iOS 18.0, *)
 #Preview {
     RealtimeTestView()
 }
