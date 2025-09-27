@@ -98,7 +98,11 @@ struct ContentView: View {
         "What is the Stoic view on anger?",
         "How do I find peace in difficult times?"
     ]
-    
+
+    var viewBackground: some View {
+        messages.isEmpty ? AnyView(Color.black) : AnyView(backgroundGradient)
+    }
+
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
@@ -110,13 +114,13 @@ struct ContentView: View {
                             if messages.isEmpty && hasShownWelcome {
                                 welcomeView
                             }
-                            
+
                             // Chat bubbles
                             ForEach(messages) { message in
                                 MessageBubble(message: message)
                                     .id(message.id)
                             }
-                            
+
                             // Loading indicator (LLM working)
                             if isLoading {
                                 HStack {
@@ -138,24 +142,24 @@ struct ContentView: View {
                         }
                     }
                 }
-                
+
                 Divider()
-                
+
                 // Quick Questions (manual mode)
                 if messages.isEmpty && !isAlwaysListening && hasShownWelcome {
                     quickQuestionsView
                 }
-                
+
                 voiceStatusBar
-                
+
                 // Manual text input row (shown when not always listening OR mic perms denied)
                 if !isAlwaysListening || !speechRecognizer.isAuthorized {
                     manualInputRow
                 }
             }
-            .background(backgroundGradient)
+            .background(viewBackground)
             .animation(.easeInOut(duration: 0.3), value: elevenLabsService.isSpeaking)
-            .navigationTitle("🏛️ Plato")
+            .navigationTitle("🏛️ Professor Alan")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
                 ContentView.sharedSpeechRecognizer = speechRecognizer
@@ -218,6 +222,7 @@ struct ContentView: View {
                 Text(errorMessage ?? "An unknown error occurred")
             }
         }
+        .background(Color.black)
     }
     
     // MARK: - Helper Methods
@@ -246,72 +251,55 @@ struct ContentView: View {
     // MARK: - Views
     
     private var welcomeView: some View {
-        Group {
-            if speechRecognizer.isAuthorized {
-                Spacer()
-                Spacer()
-                Spacer()
+        ZStack {
+            Color.black.ignoresSafeArea()
 
-                VStack(spacing: 32) {
-                    // Larger Plato silhouette
-                    Image("PlatoSilhouette")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(height: UIScreen.main.bounds.height * 0.26) // 26% of screen height
-                    
-                    VStack(spacing: 20) {
-                        // Gray philosophical text
-                        Text("I'm listening and ready for your questions about life, wisdom, and philosophy.")
-                            .font(.body)
-                            .multilineTextAlignment(.center)
-                            .foregroundColor(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        
-                        // Simplified CTA
-                        Text("Just start speaking!")
-                            .font(.callout)
-                            .fontWeight(.semibold)
-                            .foregroundColor(.blue)
-                    }
-                }
-                .padding(.horizontal, 40)
-                
-                Spacer()
-                Spacer()
-                Spacer()  // Extra spacer to push content up slightly from absolute center
-            } else {
-                // Permission request view
-                VStack(spacing: 32) {
-                    // Same large silhouette
-                    Image("PlatoSilhouette")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(height: UIScreen.main.bounds.height * 0.26)
-                    
-                    VStack(spacing: 16) {
-                        Text("To enable voice conversations, please grant microphone and speech recognition permissions.")
-                            .font(.body)
-                            .multilineTextAlignment(.center)
-                            .foregroundColor(.secondary)
-                        
-                        Button("Open Settings") {
-                            if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
-                                UIApplication.shared.open(settingsUrl)
+            ZStack {
+                Image("Onboarding")
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.height)
+                    .clipped()
+                    .ignoresSafeArea()
+
+                VStack {
+                    Spacer()
+
+                    if speechRecognizer.isAuthorized {
+                        // Empty space for authorized users - text is in background image
+                        EmptyView()
+                    } else {
+                        // Permission request view
+                        VStack(spacing: 16) {
+                            Text("To enable voice conversations, please grant microphone and speech recognition permissions.")
+                                .font(.body)
+                                .multilineTextAlignment(.center)
+                                .foregroundColor(.secondary)
+
+                            Button("Open Settings") {
+                                if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
+                                    UIApplication.shared.open(settingsUrl)
+                                }
                             }
+                            .buttonStyle(.borderedProminent)
+                            .padding(.top, 8)
+
+                            Text("You can still type questions below!")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundColor(.blue)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .padding(.top, 8)
-                        
-                        Text("You can still type questions below!")
-                            .font(.caption)
-                            .fontWeight(.medium)
-                            .foregroundColor(.blue)
+                        .padding(.horizontal, 40)
+                        .background(Color.black.opacity(0.7))
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 20)
+                        .ignoresSafeArea(edges: .bottom)
                     }
                 }
-                .padding(.horizontal, 40)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .toolbarBackground(Color.black, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
     }
     
     private var quickQuestionsView: some View {
@@ -346,57 +334,37 @@ struct ContentView: View {
     
     
     private var voiceStatusBar: some View {
-        VStack(spacing: 4) {
-            HStack {
-                // Two-state dot: Blue (listening/ready) or Orange (speaking)
-                Circle()
-                    .fill(elevenLabsService.isSpeaking ? Color.orange : Color.blue)
-                    .frame(width: 8, height: 8)
-                    .scaleEffect(elevenLabsService.isSpeaking ? 1.2 : 1.0)
-                    .animation(
-                        elevenLabsService.isSpeaking ? .easeInOut(duration: 1.0).repeatForever(autoreverses: true) : .default,
-                        value: elevenLabsService.isSpeaking
-                    )
-                
-                // Keep all your existing status text logic - it's good!
-                if speechRecognizer.isProcessing {
-                    Text("Processing your question...")
-                        .font(.caption)
-                        .foregroundColor(.blue)
-                } else if elevenLabsService.isSpeaking {
-                    Text("Plato is speaking right now...")
-                        .font(.caption)
-                        .foregroundColor(.orange)
-                } else if speechRecognizer.isRecording && !inputText.isEmpty {
-                    Text("Listening: \"\(inputText.prefix(30))\(inputText.count > 30 ? "..." : "")\"")
-                        .font(.caption)
-                        .foregroundColor(.primary)
-                } else if speechRecognizer.isRecording {
-                    Text("Listening for your question...")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } else if isAlwaysListening {
-                    Text("Ready to listen")
-                        .font(.caption)
-                        .foregroundColor(.blue)  // Changed from .red to match blue state
-                } else {
-                    Text("Always-listening disabled")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                
-                Spacer()
-                
-                Button(action: toggleAlwaysListening) {
-                    Image(systemName: isAlwaysListening ? "ear.and.waveform" : "ear.and.waveform.slash")
-                        .font(.caption)
-                        .foregroundColor(isAlwaysListening ? .blue : .gray)
-                }
+        HStack(spacing: 12) {
+            Circle()
+                .fill(elevenLabsService.isSpeaking ? Color.orange : (speechRecognizer.isProcessing ? Color.yellow : Color.green))
+                .frame(width: 10, height: 10)
+
+            if speechRecognizer.isProcessing {
+                Text("Processing...")
+                    .foregroundColor(.yellow)
+                    .font(.system(size: 15, weight: .medium))
+            } else if elevenLabsService.isSpeaking {
+                Text("Professor Alan is speaking...")
+                    .foregroundColor(.orange)
+                    .font(.system(size: 15, weight: .medium))
+            } else if !inputText.isEmpty {
+                Text(inputText)
+                    .foregroundColor(.white)
+                    .font(.system(size: 15, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            } else {
+                Text("Listening for your question...")
+                    .foregroundColor(.white)
+                    .font(.system(size: 15, weight: .medium))
             }
-            .padding(.horizontal)
         }
-        .padding(.vertical, 6)
-        .background(Color(.systemGray6))
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(Color(red: 0.15, green: 0.15, blue: 0.15).opacity(0.95))
+        .cornerRadius(25)
+        .overlay(RoundedRectangle(cornerRadius: 25).stroke(Color.green.opacity(0.3), lineWidth: 1))
+        .padding(.bottom, 50)
     }
     
     private var manualInputRow: some View {
@@ -629,7 +597,7 @@ struct MessageBubble: View {
                         .background(Color(.systemGray5))
                         .foregroundColor(.primary)
                         .cornerRadius(18)
-                    Text("🏛️ Plato")
+                    Text("🏛️ Professor Alan")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
