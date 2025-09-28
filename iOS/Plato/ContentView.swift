@@ -167,9 +167,10 @@ struct ContentView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    Text("Professor Alan")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.white)
+                    Image("professor_alan_logo")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(height: 14)
                 }
             }
             .toolbarBackground(.visible, for: .navigationBar)
