@@ -349,36 +349,50 @@ struct ContentView: View {
     
     
     private var voiceStatusBar: some View {
-        HStack(spacing: 12) {
-            Circle()
-                .fill(elevenLabsService.isSpeaking ? Color.orange : (speechRecognizer.isProcessing ? Color.yellow : Color.green))
-                .frame(width: 10, height: 10)
+        HStack {
+            Spacer()
 
-            if speechRecognizer.isProcessing {
-                Text("Processing...")
-                    .foregroundColor(.yellow)
-                    .font(.system(size: 15, weight: .medium))
-            } else if elevenLabsService.isSpeaking {
-                Text("Professor Alan is speaking...")
-                    .foregroundColor(.orange)
-                    .font(.system(size: 15, weight: .medium))
-            } else if !inputText.isEmpty {
-                Text(inputText)
-                    .foregroundColor(.white)
-                    .font(.system(size: 15, weight: .medium))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            } else {
-                Text("Listening for your question...")
-                    .foregroundColor(.white)
-                    .font(.system(size: 15, weight: .medium))
+            HStack(spacing: 12) {
+                Circle()
+                    .fill(elevenLabsService.isSpeaking ? Color.orange : (speechRecognizer.isProcessing ? Color.yellow : Color.green))
+                    .frame(width: 10, height: 10)
+
+                if speechRecognizer.isProcessing {
+                    Text("Processing...")
+                        .foregroundColor(.yellow)
+                        .font(.system(size: 15, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                } else if elevenLabsService.isSpeaking {
+                    Text("Professor Alan is speaking...")
+                        .foregroundColor(.orange)
+                        .font(.system(size: 15, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                } else if !inputText.isEmpty {
+                    Text(inputText)
+                        .foregroundColor(.white)
+                        .font(.system(size: 15, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                } else {
+                    Text("Listening for your question...")
+                        .foregroundColor(.white)
+                        .font(.system(size: 15, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
+            .frame(width: 230)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .background(Color(red: 0.15, green: 0.15, blue: 0.15).opacity(0.95))
+            .cornerRadius(25)
+            .overlay(RoundedRectangle(cornerRadius: 25).stroke(Color.green.opacity(0.3), lineWidth: 1))
+
+            Spacer()
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .background(Color(red: 0.15, green: 0.15, blue: 0.15).opacity(0.95))
-        .cornerRadius(25)
-        .overlay(RoundedRectangle(cornerRadius: 25).stroke(Color.green.opacity(0.3), lineWidth: 1))
+        .background(Color.black)
         .padding(.bottom, 50)
     }
     
@@ -612,7 +626,7 @@ struct MessageBubble: View {
                         .background(Color(.systemGray5))
                         .foregroundColor(.primary)
                         .cornerRadius(18)
-                    Text("🏛️ Professor Alan")
+                    Text("Professor Alan")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
