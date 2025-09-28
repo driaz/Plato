@@ -414,6 +414,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Plato/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Professor Alan";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Plato needs microphone access to hear your philosophical questions";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Plato uses speech recognition to understand your spoken questions";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -445,6 +446,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Plato/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Professor Alan";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Plato needs microphone access to hear your philosophical questions";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Plato uses speech recognition to understand your spoken questions";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

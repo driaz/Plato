@@ -133,6 +133,8 @@ struct ContentView: View {
                             }
                         }
                         .padding(.horizontal)
+                        .padding(.top, 16)
+                        .padding(.bottom, 8)
                     }
                     .onChange(of: messages, initial: false) { _, _ in
                         if let lastMessage = messages.last {
@@ -145,22 +147,34 @@ struct ContentView: View {
 
                 Divider()
 
-                // Quick Questions (manual mode)
-                if messages.isEmpty && !isAlwaysListening && hasShownWelcome {
-                    quickQuestionsView
-                }
+                VStack(spacing: 0) {
+                    // Quick Questions (manual mode)
+                    if messages.isEmpty && !isAlwaysListening && hasShownWelcome {
+                        quickQuestionsView
+                    }
 
-                voiceStatusBar
+                    voiceStatusBar
 
-                // Manual text input row (shown when not always listening OR mic perms denied)
-                if !isAlwaysListening || !speechRecognizer.isAuthorized {
-                    manualInputRow
+                    // Manual text input row (shown when not always listening OR mic perms denied)
+                    if !isAlwaysListening || !speechRecognizer.isAuthorized {
+                        manualInputRow
+                    }
                 }
+                .background(Color.black)
             }
             .background(viewBackground)
             .animation(.easeInOut(duration: 0.3), value: elevenLabsService.isSpeaking)
-            .navigationTitle("🏛️ Professor Alan")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("Professor Alan")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(.white)
+                }
+            }
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarBackground(Color.black.opacity(1), for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .onAppear {
                 ContentView.sharedSpeechRecognizer = speechRecognizer
                 ContentView.sharedElevenLabs = elevenLabsService  
@@ -261,6 +275,7 @@ struct ContentView: View {
                     .frame(width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.height)
                     .clipped()
                     .ignoresSafeArea()
+                    .offset(y: -90)
 
                 VStack {
                     Spacer()
@@ -290,16 +305,15 @@ struct ContentView: View {
                                 .foregroundColor(.blue)
                         }
                         .padding(.horizontal, 40)
-                        .background(Color.black.opacity(0.7))
+                        .background(Color.black)
                         .frame(maxWidth: .infinity)
                         .padding(.top, 20)
                         .ignoresSafeArea(edges: .bottom)
                     }
                 }
             }
+            .ignoresSafeArea(.container, edges: .top)
         }
-        .toolbarBackground(Color.black, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
     }
     
     private var quickQuestionsView: some View {
