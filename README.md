@@ -5,7 +5,7 @@ An iOS voice assistant that brings the warmth and wisdom of an Oxford humanities
 
 <p align="center">
   <a href="https://www.youtube.com/shorts/BBHFOto_Pao">
-    <img src="demo/WelcomeView.png" alt="Professor Alan Demo" width="600">
+    <img src="demo/screenshots/WelcomeView.png" alt="Professor Alan Demo" width="600">
   </a>
 </p>
 
