@@ -6,7 +6,7 @@
 **August 2025**: Native iOS as "Plato" (Stoic philosopher)  
 **September 2025**: OpenAI Realtime API experiments, and Professor Alan Rebrand 
 
-## Chapter 1: The Mobile Web Dead End (July 2024)
+## Chapter 1: The Mobile Web Dead End (July 2025)
 
 ### The Vision
 Build a voice-enabled philosophy chatbot accessible via web browser.
@@ -17,7 +17,7 @@ Build a voice-enabled philosophy chatbot accessible via web browser.
 - Web Speech API limitations on mobile
 - **Lesson**: Voice UX demands native
 
-## Chapter 2: Going Native with Plato (July 2025)
+## Chapter 2: Going Native with Plato (August 2025)
 
 ### The Pivot
 Rebuilt as native iOS app focused on Stoic philosophy.
